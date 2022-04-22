@@ -1,4 +1,4 @@
-from ROOT import gROOT, gPad, TPad
+from ROOT import gROOT, gPad, TPad, TGaxis
 import CMS_lumi
 import tdrstyle
 
@@ -38,6 +38,8 @@ class Plotstyle:
     def setStyle(self):
     
         mystyle = tdrstyle.setTDRStyle()
+
+        TGaxis.SetMaxDigits(4)
         
         #change the CMS_lumi variables (see CMS_lumi.py)
         CMS_lumi.lumi_7TeV = "4.8 fb^{-1}"

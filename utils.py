@@ -2,14 +2,15 @@ import ROOT
 from plotstyle import Plotstyle
 from array import array
 import ctypes
+import os
 
 ROOT.gEnv.SetValue('RooFit.Banner', 0)
 
+# doesn't work with ROOT.RDataFrame().Range()
 try:
     ROOT.EnableImplicitMT()
 except AttributeError:
     pass
-
 
 """
 To use RDataFrames to process TreeSamples a rather recent ROOT version is required, e.g.
@@ -51,6 +52,9 @@ class PlotFactory:
             self.outputpath = outputpath[:-1]
         else:
             self.outputpath = outputpath
+
+        if not os.path.exists(outputpath):
+            os.makedirs(outputpath)
 
         self.outputpattern = outputpattern
         self.outputformat = outputformat
@@ -156,32 +160,35 @@ class PlotFactory:
 
             if isinstance(s, TreeSample):
 
-                # TODO: implement histo weights with tCounter.GetEntries()
-
                 # first book all histograms
                 for v in self.variables:
+
+                    if not v.vartoplot == v.name:
+                        s.df = s.df.Define(
+                            v.name, v.vartoplot
+                        )
 
                     if s.vectorselection is None:
                         if s.weight is None:
                             self.histos[v + s] = s.df.Histo1D(
-                                ('h' + str(v + s), '', v.nbins, v.axisrange[0], v.axisrange[1]), v.vartoplot
+                                ('h' + str(v + s), '', v.nbins, v.axisrange[0], v.axisrange[1]), v.name
                             )
                         else:
                             self.histos[v + s] = s.df.Define(
                                 '_w', s.weight
                             ).Histo1D(
-                                ('h' + str(v + s), '', v.nbins, v.axisrange[0], v.axisrange[1]), v.vartoplot, '_w'
+                                ('h' + str(v + s), '', v.nbins, v.axisrange[0], v.axisrange[1]), v.name, '_w'
                             )
                     else:
                         if s.weight is None:
                             self.histos[v + s] = s.df.Define(
-                                v.name + '_pass', v.vartoplot + '[' + s.vectorselection + ']'
+                                v.name + '_pass', v.name + '[' + s.vectorselection + ']'
                             ).Histo1D(
                                 ('h' + str(v + s), '', v.nbins, v.axisrange[0], v.axisrange[1]), v.name + '_pass'
                             )
                         else:
                             self.histos[v + s] = s.df.Define(
-                                v.name + '_pass', v.vartoplot + '[' + s.vectorselection + ']'
+                                v.name + '_pass', v.name + '[' + s.vectorselection + ']'
                             ).Define(
                                 '_w', s.weight
                             ).Histo1D(
@@ -615,19 +622,37 @@ class TreeSample(Sample):
                  linestyle=ROOT.kSolid,
                  fillstyle=1001):
 
+        print 'Initializing', name
+
         Sample.__init__(self, category, name, title, color, linestyle, fillstyle)
 
-        self.vectorselection = vectorselection
-        self.weight = weight
-
-        if eventselection is None or eventselection == '':
+        if eventselection is None or eventselection == '' or eventselection == '1':
             self.df = ROOT.RDataFrame(tree, files)
         else:
             self.df = ROOT.RDataFrame(tree, files).Filter(eventselection, ' selection for ' + self.name)
 
+        self.vectorselection = vectorselection
+
+
+        if weight is not None and 'XSEC' in weight:
+            try:
+                weight = weight.replace('XSEC',
+                                        str(self.df.AsNumpy(columns=['crossSection'])['crossSection'][0]))
+            except IndexError:
+                weight = weight.replace('XSEC',
+                                        '1.')
+
+        if weight is not None and 'COUNTER' in weight:
+            self.counter = ROOT.RDataFrame('tCounter', files)
+            weight = weight.replace('COUNTER',
+                                    str(round(self.counter.Count().GetValue(), 1)))
+
+        self.weight = weight
+
         # TODO: implement usage of TreeSamples without RDataFrame with:
-        # TODO: deactivation of unused branches via setbranchstatus
-        # TODO: entrylist used correctly?
+        # deactivation of unused branches via setbranchstatus
+        # entrylist used correctly?
+        #
         # self.tree = tree
         # self.files = files
         #
