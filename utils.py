@@ -2,6 +2,8 @@ import ROOT
 from plotstyle import Plotstyle
 from array import array
 import ctypes
+from glob import glob
+import re
 import os
 
 ROOT.gEnv.SetValue('RooFit.Banner', 0)
@@ -27,7 +29,7 @@ class PlotFactory:
                  yaxisrangeratio=(0.0001, 1.9999),
                  ratiohlines=None,
                  linewidth=1, markersize=2,
-                 poslegend=(0.4, 0.55, 0.95, 0.9), ncolumnslegend=1, boldlegend=False,
+                 poslegend=(0.39, 0.55, 0.93, 0.9), ncolumnslegend=1, boldlegend=False,
                  text='36 fb^{-1} (13 TeV)', extratext='#splitline{Work in progress}{Simulation}',
                  height=1280, width=None, ipos=11):
 
@@ -117,9 +119,10 @@ class PlotFactory:
         self._draw_plots()
 
         # TODO: implement exporting histos/trees
-        # fout = ROOT.TFile('/nfs/dust/cms/user/wolfmor/NTupleStuff/PUweights.root', 'recreate')
-        # for ratio in self.ratiohistos:
-        #     self.ratiohistos[ratio].Write()
+        # fout = ROOT.TFile('/nfs/dust/cms/user/wolfmor/NTupleStuff/PUweights_data16EF.root', 'recreate')
+        # self.ratiohistos['n_pvdata:STACK'].Write()
+        # # for ratio in self.ratiohistos:
+        # #     self.ratiohistos[ratio].Write()
         # fout.Close()
 
     def add_variables(self, variablelist):
@@ -127,6 +130,10 @@ class PlotFactory:
             self.add_variable(variable)
 
     def add_variable(self, variable):
+
+        if str(variable) in [str(v) for v in self.variables]:
+            raise AssertionError(str(variable) + ' is a duplicate (names must be unique)')
+
         self.variables.append(variable)
 
     def add_samples(self, samplelist):
@@ -134,6 +141,10 @@ class PlotFactory:
             self.add_sample(sample)
 
     def add_sample(self, sample):
+
+        if str(sample) in [str(s) for s in self.stacksamples + self.markersamples + self.linesamples]:
+            raise AssertionError(str(sample) + ' is a duplicate (names must be unique)')
+        
         if sample.category == 'stack':
             self.stacksamples.append(sample)
         elif sample.category == 'marker':
@@ -163,7 +174,7 @@ class PlotFactory:
                 # first book all histograms
                 for v in self.variables:
 
-                    if not v.vartoplot == v.name:
+                    if not v.vartoplot == v.name and v.name not in s.df.GetColumnNames():
                         s.df = s.df.Define(
                             v.name, v.vartoplot
                         )
@@ -229,6 +240,10 @@ class PlotFactory:
 
         for iv, v in enumerate(self.variables):
 
+            # TODO: is it a problem to always call Sumw2 for all histograms if it has already been called?
+            for s in self.stacksamples + self.markersamples + self.linesamples:
+                self.histos[v + s].Sumw2()
+
             if len(self.stacksamples) > 0:
                 self.sums[v] = self.histos[v + self.stacksamples[0]].Clone('sum' + v.name)
                 self.sums[v].Reset('ICESM')
@@ -242,6 +257,32 @@ class PlotFactory:
                     for s in self.stacksamples:
                         self.histos[v + s].Scale(1. / self.sums[v].Integral())
                     self.sums[v].Scale(1. / self.sums[v].Integral())
+
+            for s in self.markersamples + self.linesamples:
+                if s.scaleto is None: continue
+                scaletoargs = s.scaleto.split(':')
+                if len(scaletoargs) == 3 and scaletoargs[0] in [str(_s) for _s in self.stacksamples + self.markersamples + self.linesamples] or scaletoargs[0] == 'STACK':
+
+                    scaletostart = float(scaletoargs[1].replace('START', str(v.axisrange[0])))
+                    scaletoend = float(scaletoargs[2].replace('END', str(v.axisrange[1])))
+
+                    scaletostartbin = self.histos[v + s].GetXaxis().FindBin(scaletostart)
+                    scaletoendbin = self.histos[v + s].GetXaxis().FindBin(scaletoend)
+
+                    if scaletoargs[0] == 'STACK':
+                        scaletotarget = self.sums[v].Integral(scaletostartbin, scaletoendbin)
+                    else:
+                        scaletotarget = self.histos[str(v) + scaletoargs[0]].Integral(scaletostartbin, scaletoendbin)
+
+                    self.histos[v + s].Scale(scaletotarget / self.histos[v + s].Integral())
+
+                elif len(scaletoargs) == 1 and scaletoargs[0].replace('.', '', 1).isdigit():
+
+                    self.histos[v + s].Scale(float(scaletoargs[0]) / self.histos[v + s].Integral())
+
+                else:
+                    raise NotImplementedError('cannot interpret scaleto: ' + s.scaleto)
+
 
             if len(self.stacksamples) > 0:
                 self.stacks[v] = ROOT.THStack('stack' + v.name, '')
@@ -499,7 +540,7 @@ class PlotFactory:
                     for lowerpad in ['1_2', '2_2']:
 
                         subpads[lowerpad].cd()
-
+                        # TODO: draw small arrows if ratio out of range
                         for r in self.ratios:
 
                             if r.name.split(':')[0] in [s.name for s in self.markersamples]:
@@ -534,9 +575,15 @@ class PlotFactory:
 
             canvas.Update()
             canvas.Draw()
-            canvas.Print(self.outputpath
-                         + '/' + self.outputpattern.replace('VARIABLE', v.name)
-                         + '.' + self.outputformat)
+            if type(self.outputformat) == list:
+                for outputfmt in self.outputformat:
+                    canvas.Print(self.outputpath
+                                 + '/' + self.outputpattern.replace('VARIABLE', v.name)
+                                 + '.' + outputfmt)
+            else:
+                canvas.Print(self.outputpath
+                             + '/' + self.outputpattern.replace('VARIABLE', v.name)
+                             + '.' + self.outputformat)
 
     def _draw_histos(self, v, log):
 
@@ -565,7 +612,9 @@ class Sample:
 
                  color=ROOT.kBlack,
                  linestyle=ROOT.kSolid,
-                 fillstyle=1001):
+                 fillstyle=1001,
+
+                 scaleto=None):
 
         if category not in ['stack', 'marker', 'line']:
             raise NotImplementedError('unknown sample category')
@@ -580,6 +629,8 @@ class Sample:
         self.color = color
         self.linestyle = linestyle
         self.fillstyle = fillstyle
+
+        self.scaleto = scaleto
 
     def __str__(self):
         return self.name
@@ -598,9 +649,11 @@ class HistoSample(Sample):
 
                  color=ROOT.kBlack,
                  linestyle=ROOT.kSolid,
-                 fillstyle=1001):
+                 fillstyle=1001,
 
-        Sample.__init__(self, category, name, title, color, linestyle, fillstyle)
+                 scaleto=None):
+
+        Sample.__init__(self, category, name, title, color, linestyle, fillstyle, scaleto)
 
         self.inputfileindex = inputfileindex
         if histofile is None:
@@ -620,33 +673,97 @@ class TreeSample(Sample):
 
                  color=ROOT.kBlack,
                  linestyle=ROOT.kSolid,
-                 fillstyle=1001):
+                 fillstyle=1001,
+
+                 scaleto=None,
+
+                 ntestfiles=0
+                 ):
 
         print 'Initializing', name
 
-        Sample.__init__(self, category, name, title, color, linestyle, fillstyle)
+        Sample.__init__(self, category, name, title, color, linestyle, fillstyle, scaleto)
+
+        if ntestfiles:
+            if type(files) == list:
+                files = glob(files[0])[:ntestfiles]
+            else:
+                files = glob(files)[:ntestfiles]
 
         if eventselection is None or eventselection == '' or eventselection == '1':
             self.df = ROOT.RDataFrame(tree, files)
         else:
             self.df = ROOT.RDataFrame(tree, files).Filter(eventselection, ' selection for ' + self.name)
 
-        self.vectorselection = vectorselection
+        if vectorselection is None or vectorselection == '' or vectorselection == '1':
+            self.vectorselection = None
+        else:
+            self.vectorselection = vectorselection
 
 
-        if weight is not None and 'XSEC' in weight:
-            try:
-                weight = weight.replace('XSEC',
-                                        str(self.df.AsNumpy(columns=['crossSection'])['crossSection'][0]))
-            except IndexError:
-                weight = weight.replace('XSEC',
-                                        '1.')
+        if weight is not None:
 
-        if weight is not None and 'COUNTER' in weight:
-            self.counter = ROOT.RDataFrame('tCounter', files)
-            weight = weight.replace('COUNTER',
-                                    str(round(self.counter.Count().GetValue(), 1)))
+            weighttosplit = ''
+            oktoreplace = True
+            for ichar, character in enumerate(weight):
+                if character in ['/', '*'] and oktoreplace:
+                    weighttosplit += 'SPLITHERE'
+                else:
+                    weighttosplit += character
 
+                if ichar > 1 and weight[ichar-2:ichar+1] == ':=[':
+                    oktoreplace = False
+
+                if not oktoreplace and character == ']':
+                    oktoreplace = True
+
+            weights = weighttosplit.split('SPLITHERE')
+            for w in weights:
+                if w in self.df.GetColumnNames() or w in ['XSEC', 'NSIM', 'COUNTER'] or w.replace('.', '', 1).isdigit(): continue
+                wargs = w.split(':=[')
+                if len(wargs) == 2:
+                    self.df = self.df.Define(wargs[0], wargs[1].replace(']', ''))
+                    weight = weight.replace(':=[' + wargs[1], '')
+                else:
+                    raise NotImplementedError('cannot interpret weight: ', w)
+
+
+            self.smallchain = None
+            if 'XSEC' in weight or 'NSIM' in weight:
+                print ' get small chain'
+                self.smallchain = ROOT.TChain(tree)
+                if type(files) == list:
+                    self.smallchain.Add(files[0], 1)
+                else:
+                    self.smallchain.Add(files, 1)
+
+                if self.smallchain.GetEntries() > 0:
+
+                    self.smallchain.GetEntry(0)
+
+                    if 'XSEC' in weight:
+                        print ' get XSEC'
+                        if self.smallchain is not None:
+                            weight = weight.replace('XSEC', str(self.smallchain.crossSection))
+                        else:
+                            weight = weight.replace('XSEC', '1.')
+
+                    if 'NSIM' in weight:
+                        print ' get NSIM'
+                        if self.smallchain is not None:
+                            weight = weight.replace('NSIM', str(self.smallchain.numSimEvents))
+                        else:
+                            weight = weight.replace('NSIM', '1.')
+                else:
+                    print(' small chain is empty')
+
+            if 'COUNTER' in weight:
+                print ' get COUNTER'
+                self.counter = ROOT.RDataFrame('tCounter', files)
+                weight = weight.replace('COUNTER',
+                                        str(round(self.counter.Count().GetValue(), 1)))
+
+        print ' weight', weight
         self.weight = weight
 
         # TODO: implement usage of TreeSamples without RDataFrame with:
