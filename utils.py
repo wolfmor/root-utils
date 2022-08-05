@@ -29,7 +29,7 @@ class PlotFactory:
                  yaxisrangeratio=(0.0001, 1.9999),
                  ratiohlines=None,
                  linewidth=1, markersize=2,
-                 poslegend=(0.39, 0.55, 0.93, 0.9), ncolumnslegend=1, boldlegend=False,
+                 poslegend=(0.4, 0.55, 0.93, 0.9), ncolumnslegend=1, boldlegend=False,
                  text='36 fb^{-1} (13 TeV)', extratext='#splitline{Work in progress}{Simulation}',
                  height=1280, width=None, ipos=11):
 
@@ -117,6 +117,7 @@ class PlotFactory:
         self._make_ratios()
         self._style_histos()
         self._draw_plots()
+        self._save_histos()
 
         # TODO: implement exporting histos/trees
         # fout = ROOT.TFile('/nfs/dust/cms/user/wolfmor/NTupleStuff/PUweights_data16EF.root', 'recreate')
@@ -165,6 +166,7 @@ class PlotFactory:
 
         print('\n# Get Histos')
 
+        makeflat = {}
         for s in self.stacksamples + self.markersamples + self.linesamples:
 
             print s
@@ -178,6 +180,10 @@ class PlotFactory:
                         s.df = s.df.Define(
                             v.name, v.vartoplot
                         )
+
+                    if type(v.nbins) == str and 'flat' in v.nbins:
+                        makeflat[v] = v.nbins
+                        v.nbins = (v.axisrange[1] - v.axisrange[0]) * 100  # TODO: might be problematic for large ranges
 
                     if s.vectorselection is None:
                         if s.weight is None:
@@ -239,10 +245,55 @@ class PlotFactory:
 
 
         for iv, v in enumerate(self.variables):
+            
+            if v in makeflat:
+                
+                flatsample = makeflat[v].split(':')[1]
+                flatnbins = float(makeflat[v].split(':')[2])
 
-            # TODO: is it a problem to always call Sumw2 for all histograms if it has already been called?
+                if flatnbins < 1:  # interpret as relative stat error in each bin
+                    flatnperbin = 1. / flatnbins**2.
+                    flatnbins = int(self.histos[v + flatsample].Integral() / flatnperbin)
+                else:
+                    flatnbins = int(flatnbins)
+
+                p = array('d', [i/float(flatnbins) for i in range(1, flatnbins)])
+                quantiles = array('d', (flatnbins-1)*[0.])
+                self.histos[v + flatsample].GetQuantiles(flatnbins-1, quantiles, p)
+
+                # in order to make sure to use existing bin edges
+                roundedquantiles = []
+                for q in quantiles:
+                    roundedquantiles.append(round(q, 2))
+                quantiles = array('d', roundedquantiles)
+
+                quantiles.insert(0, v.axisrange[0])
+                quantiles.append(v.axisrange[1])
+
+                for s in self.stacksamples + self.markersamples + self.linesamples:
+                    self.histos[v + s] = self.histos[v + s].Rebin(
+                        flatnbins, self.histos[v + s].GetName() + 'rebinned', quantiles
+                    )
+
+            if v.blind is not None:
+                for blindthis in v.blind:
+                    if not len(blindthis.split(':')) == 3:
+                        raise NotImplementedError('cannot interpret blind: ' + blindthis)
+
+                    blindsample, blindstart, blindend = blindthis.split(':')
+
+                    blindstart = blindstart.replace('START', str(v.axisrange[0])).replace('END', str(v.axisrange[1]))
+                    blindend = blindend.replace('START', str(v.axisrange[0])).replace('END', str(v.axisrange[1]))
+
+                    blindstartbin = self.histos[v + blindsample].FindBin(float(blindstart))
+                    blindendbin = self.histos[v + blindsample].FindBin(float(blindend))
+
+                    for blindbin in range(blindstartbin, blindendbin+1):
+                        self.histos[v + blindsample].SetBinContent(blindbin, 0.)
+
             for s in self.stacksamples + self.markersamples + self.linesamples:
-                self.histos[v + s].Sumw2()
+                if not self.histos[v + s].GetSumw2N():
+                    self.histos[v + s].Sumw2()
 
             if len(self.stacksamples) > 0:
                 self.sums[v] = self.histos[v + self.stacksamples[0]].Clone('sum' + v.name)
@@ -252,8 +303,9 @@ class PlotFactory:
 
             if self.normalize:
                 for s in self.markersamples + self.linesamples:
-                    self.histos[v + s].Scale(1. / self.histos[v + s].Integral())
-                if len(self.stacksamples) > 0:
+                    if self.histos[v + s].Integral() > 0:
+                        self.histos[v + s].Scale(1. / self.histos[v + s].Integral())
+                if len(self.stacksamples) > 0 and self.sums[v].Integral() > 0:
                     for s in self.stacksamples:
                         self.histos[v + s].Scale(1. / self.sums[v].Integral())
                     self.sums[v].Scale(1. / self.sums[v].Integral())
@@ -274,11 +326,13 @@ class PlotFactory:
                     else:
                         scaletotarget = self.histos[str(v) + scaletoargs[0]].Integral(scaletostartbin, scaletoendbin)
 
-                    self.histos[v + s].Scale(scaletotarget / self.histos[v + s].Integral())
+                    if self.histos[v + s].Integral() > 0:
+                        self.histos[v + s].Scale(scaletotarget / self.histos[v + s].Integral())
 
                 elif len(scaletoargs) == 1 and scaletoargs[0].replace('.', '', 1).isdigit():
 
-                    self.histos[v + s].Scale(float(scaletoargs[0]) / self.histos[v + s].Integral())
+                    if self.histos[v + s].Integral() > 0:
+                        self.histos[v + s].Scale(float(scaletoargs[0]) / self.histos[v + s].Integral())
 
                 else:
                     raise NotImplementedError('cannot interpret scaleto: ' + s.scaleto)
@@ -330,7 +384,7 @@ class PlotFactory:
                     else:
                         self.ratiohistos[v + r].Divide(self.histos[v.name + denominator])
 
-                elif r.category == 'cutsig':
+                elif r.category in ['cutsig', 'binsig']:
 
                     if not len(r.name.split(':')) == 3:
                         raise NotImplementedError('cannot interpret ratio')
@@ -349,6 +403,8 @@ class PlotFactory:
 
                         b += 1
 
+                        if r.category == 'binsig': nbins = b
+
                         staterrS = ctypes.c_double(0.)
                         staterrB = ctypes.c_double(0.)
 
@@ -362,8 +418,49 @@ class PlotFactory:
                         else:
                             B = self.histos[v.name + background].IntegralAndError(b, nbins, staterrB)
 
+                        # TODO: implement error like this?
                         if S > 0 and B > 0:
-                            self.ratiohistos[v + r].SetBinContent(b, ROOT.RooStats.AsimovSignificance(S, B, syserrB*B))
+
+                            sig = ROOT.RooStats.AsimovSignificance(S, B, syserrB*B)
+
+                            sigUp = ROOT.RooStats.AsimovSignificance(S+ROOT.TMath.Sqrt(S), B-ROOT.TMath.Sqrt(B), syserrB*(B-ROOT.TMath.Sqrt(B)))
+                            sigDown = ROOT.RooStats.AsimovSignificance(S-ROOT.TMath.Sqrt(S), B+ROOT.TMath.Sqrt(B), syserrB*(B+ROOT.TMath.Sqrt(B)))
+
+                            self.ratiohistos[v + r].SetBinContent(b, sig)
+                            self.ratiohistos[v + r].SetBinError(b, 0.5*(sigUp-sigDown))
+
+                elif r.category == 'calibration':
+
+                    if not len(r.name.split(':')) == 2:
+                        raise NotImplementedError('cannot interpret calibration')
+
+                    signal = r.name.split(':')[0]
+                    background = r.name.split(':')[1]
+
+                    if signal == 'STACK':
+                        signalhisto = self.sums[v].Clone('calibration_signalhisto')
+                    else:
+                        signalhisto = self.histos[v.name + signal].Clone('calibration_signalhisto')
+
+                    if background == 'STACK':
+                        backgroundhisto = self.sums[v].Clone('calibration_backgroundhisto')
+                    else:
+                        backgroundhisto = self.histos[v.name + background].Clone('calibration_backgroundhisto')
+
+                    if signalhisto.Integral() == 0 or backgroundhisto.Integral() == 0:
+
+                        self.ratiohistos[v + r] = None
+                        print('skipping calibration histogram because integral is zero')
+
+                    else:
+
+                        signalhisto.Scale(1. / signalhisto.Integral())
+                        backgroundhisto.Scale(1. / backgroundhisto.Integral())
+
+                        backgroundhisto.Add(signalhisto)
+
+                        self.ratiohistos[v + r] = signalhisto.Clone(v + r)
+                        self.ratiohistos[v + r].Divide(backgroundhisto)
 
                 else:
                     raise NotImplementedError('unknown ratio type')
@@ -444,7 +541,11 @@ class PlotFactory:
 
                 self.histos[v + s].SetMarkerSize(0)
 
-            for ir, r in enumerate(self.ratios):
+            isfirstratiohisto = True
+            for r in self.ratios:
+
+                if self.ratiohistos[v + r] is None: continue
+
                 self.ratiohistos[v + r].GetXaxis().SetTitle(v.title)
                 self.ratiohistos[v + r].GetYaxis().SetTitle(self.ylabelratio)
 
@@ -455,9 +556,12 @@ class PlotFactory:
                 self.ratiohistos[v + r].SetMarkerSize(self.histos[v.name + r.name.split(':')[0]].GetMarkerSize())
                 self.ratiohistos[v + r].SetMarkerColor(self.histos[v.name + r.name.split(':')[0]].GetMarkerColor())
 
-                if ir == 0:
+                if isfirstratiohisto:
+
                     self.ratiohistos[v + r].SetMinimum(self.yaxisrangeratio[0])
                     self.ratiohistos[v + r].SetMaximum(self.yaxisrangeratio[1])
+
+                    isfirstratiohisto = False
 
     def _draw_plots(self):
 
@@ -469,9 +573,23 @@ class PlotFactory:
 
             lines = []
             for ratiohline in self.ratiohlines:
-                lines.append(ROOT.TLine(v.axisrange[0], ratiohline, v.axisrange[1], ratiohline))
-                lines[-1].SetLineWidth(1)
-                lines[-1].SetLineColor(ROOT.kBlack)
+
+                if type(ratiohline) == tuple:
+
+                    if not len(ratiohline) == 4:
+                        raise NotImplementedError('cannot interpret ratiohline')
+
+                    ratiohline = [float(rhl.replace('START', str(v.axisrange[0])).replace('END', str(v.axisrange[1]))) if type(rhl) == str else rhl for rhl in ratiohline]
+
+                    lines.append(ROOT.TLine(ratiohline[0], ratiohline[1], ratiohline[2], ratiohline[3]))
+                    lines[-1].SetLineWidth(1)
+                    lines[-1].SetLineColor(ROOT.kBlack)
+
+                else:
+
+                    lines.append(ROOT.TLine(v.axisrange[0], ratiohline, v.axisrange[1], ratiohline))
+                    lines[-1].SetLineWidth(1)
+                    lines[-1].SetLineColor(ROOT.kBlack)
 
             if self.axes == 'lin' or self.axes == 'log':
 
@@ -495,8 +613,14 @@ class PlotFactory:
 
                     for r in self.ratios:
 
+                        if self.ratiohistos[v + r] is None: continue
+
                         if r.name.split(':')[0] in [s.name for s in self.markersamples]:
                             self.ratiohistos[v + r].Draw('e x0 same')
+                        # TODO: errors on ratio histos?
+                        # elif r.name.split(':')[0] in [s.name for s in self.linesamples]:
+                        #     self.ratiohistos[v + r].Draw('hist same')
+                        #     self.ratiohistos[v + r].Draw('e x0 same')
                         else:
                             self.ratiohistos[v + r].Draw('hist same')
 
@@ -543,8 +667,14 @@ class PlotFactory:
                         # TODO: draw small arrows if ratio out of range
                         for r in self.ratios:
 
+                            if self.ratiohistos[v + r] is None: continue
+
                             if r.name.split(':')[0] in [s.name for s in self.markersamples]:
                                 self.ratiohistos[v + r].Draw('e x0 same')
+                            # TODO: errors on ratio histos?
+                            # elif r.name.split(':')[0] in [s.name for s in self.linesamples]:
+                            #     self.ratiohistos[v + r].Draw('hist same')
+                            #     self.ratiohistos[v + r].Draw('e x0 same')
                             else:
                                 self.ratiohistos[v + r].Draw('hist same')
 
@@ -603,6 +733,57 @@ class PlotFactory:
         if log: ROOT.gPad.SetLogy()
 
         self.p.postparePad()
+
+    def _save_histos(self):
+
+
+        if len([obj for obj in self.ratios + self.variables if obj.savehistos]) > 0:
+
+            print('\n# Save Histos')
+
+            fout = ROOT.TFile(self.outputpath + '/histos.root', 'recreate')
+            dirout = {}
+
+            for r in self.ratios:
+                if r.savehistos and type(r.variablestosave) == list:
+                    for v in r.variablestosave:
+                        if self.ratiohistos[v + str(r)] is None: continue
+                        self.ratiohistos[v + str(r)].Write()
+
+            for v in self.variables:
+                if v.savehistos:
+                    if v.samplestosave == 'ALL':
+
+                        for s in self.stacksamples + self.markersamples + self.linesamples:
+
+                            if s.name not in dirout:
+                                dirout[s.name] = fout.mkdir(s.name)
+                            dirout[s.name].cd()
+
+                            self.histos[v + s].Write()
+
+                        if len(self.stacksamples) > 0:
+
+                            if 'STACK' not in dirout:
+                                dirout['STACK'] = fout.mkdir('STACK')
+                            dirout['STACK'].cd()
+
+                            self.sums[v].Write()
+
+                    elif type(v.samplestosave) == list:
+
+                        for s in v.samplestosave:
+
+                            if s not in dirout:
+                                dirout[s] = fout.mkdir(s)
+                            dirout[s].cd()
+
+                            if s == 'STACK':
+                                self.sums[v].Write()
+                            else:
+                                self.histos[v + str(s)].Write()
+
+            print('just created ' + str(fout.GetName()))
 
 
 class Sample:
@@ -791,10 +972,13 @@ class Variable:
     def __init__(self, name,
                  title=None,
                  vartoplot=None,
+                 blind=None,
                  axisrange=(0, 1),
                  rebin=1,
                  nbins=100,
-                 yminlin=None, ymaxlin=None, yminlog=None, ymaxlog=None):
+                 yminlin=None, ymaxlin=None, yminlog=None, ymaxlog=None,
+                 savehistos=False,
+                 samplestosave='ALL'):
 
         self.name = name
         if title is None:
@@ -807,6 +991,15 @@ class Variable:
         else:
             self.vartoplot = vartoplot
 
+        if blind is None or blind == '':
+            self.blind = None
+        else:
+            if type(blind) == list:
+                self.blind = blind
+            else:
+                self.blind = [blind]
+
+
         self.axisrange = axisrange
         self.rebin = rebin
         self.nbins = nbins
@@ -816,6 +1009,9 @@ class Variable:
 
         self.yminlog = yminlog
         self.ymaxlog = ymaxlog
+
+        self.savehistos = savehistos
+        self.samplestosave = samplestosave
 
     def __str__(self):
         return self.name
@@ -830,17 +1026,23 @@ class Variable:
         elif len(lst) == 6:
             return cls(name=lst[0], title=lst[1], vartoplot=lst[2], axisrange=lst[3], rebin=lst[4], nbins=lst[5])
         else:
-            return None
+            raise NotImplementedError('cannot interpret lists of length ' + str(len(lst)))
 
 
 class Ratio:
-    def __init__(self, category, name):
+    def __init__(self, category, name, savehistos=False, variablestosave=None):
 
-        if category not in ['ratio', 'cutsig']:
+        if variablestosave is None:
+            variablestosave = []
+
+        if category not in ['ratio', 'cutsig', 'binsig', 'calibration']:
             raise NotImplementedError('unknown ratio category')
         self.category = category
 
         self.name = name
+
+        self.savehistos = savehistos
+        self.variablestosave = variablestosave
 
     def __str__(self):
         return self.name
