@@ -1,43 +1,127 @@
-import ROOT
-from plotstyle import Plotstyle
-from array import array
-import ctypes
-from glob import glob
-import re
-import os
+"""Module to plot, create, and edit ROOT histograms.
 
-ROOT.gEnv.SetValue('RooFit.Banner', 0)
-
-# doesn't work with ROOT.RDataFrame().Range()
-try:
-    ROOT.EnableImplicitMT()
-except AttributeError:
-    pass
-
-"""
-To use RDataFrames to process TreeSamples a rather recent ROOT version is required, e.g.
+To use ROOT.RDataFrame to process TreeSamples a rather recent ROOT version is required, e.g.,
 source /cvmfs/sft.cern.ch/lcg/app/releases/ROOT/6.24.06/x86_64-centos7-gcc48-opt/bin/thisroot.sh
 """
 
+import os
+import ctypes
+import ROOT
+from glob import glob
+from array import array
+from plotstyle import Plotstyle
+
+ROOT.gEnv.SetValue('RooFit.Banner', 0)
+
+# enable multi-threading to speed up processing of ROOT.RDataFrame (if supported by ROOT version)
+try:
+    ROOT.EnableImplicitMT()  # doesn't work with ROOT.RDataFrame().Range()
+except AttributeError:
+    pass
+
 
 class PlotFactory:
+    """Main class to make plots and/or create histograms.
 
-    def __init__(self, inputfiles=None, inputpattern='VARIABLESAMPLE',
-                 outputpath='.', outputpattern='VARIABLE', outputformat='pdf',
-                 normalize=False, axes='linlog',
-                 ylabel='Events', ylabelratio='Data / Prediction',
+    Methods
+    -------
+    process()
+        Create plots and/or save histograms according to the added variables, samples, and ratios.
+    add_variables(variablelist)
+        Add a list of variables to be processed.
+    add_variable(variable)
+        Add a variable to be processed.
+    add_samples(samplelist)
+        Add a list of samples to be processed.
+    add_sample(sample)
+        Add a sample to be processed.
+    add_ratios(ratiolist)
+        Add a list of ratios to be processed.
+    add_ratio(ratio)
+        Add a ratio to be processed.
+    """
+
+    def __init__(self,
+                 inputfiles=None,
+                 inputpattern='VARIABLESAMPLE',
+                 outputpath='.',
+                 outputpattern='VARIABLE',
+                 outputformat='pdf',
+                 normalize=False,
+                 axes='linlog',
+                 ylabel='Events',
+                 ylabelratio='Data / Prediction',
                  yaxisrangeratio=(0.0001, 1.9999),
                  ratiohlines=None,
-                 linewidth=1, markersize=2,
-                 poslegend=(0.4, 0.55, 0.93, 0.9), ncolumnslegend=1, boldlegend=False,
-                 text='36 fb^{-1} (13 TeV)', extratext='#splitline{Work in progress}{Simulation}',
-                 height=1280, width=None, ipos=11):
+                 linewidth=1,
+                 markersize=2,
+                 poslegend=(0.4, 0.55, 0.93, 0.9),
+                 ncolumnslegend=1,
+                 boldlegend=False,
+                 text='36 fb^{-1} (13 TeV)',
+                 extratext='#splitline{Work in progress}{Simulation}',
+                 height=1280,
+                 width=None,
+                 ipos=11):
+        """
+        Parameters
+        ----------
+        inputfiles : list[str], optional
+            List of input ROOT files containing histograms.
+        inputpattern : str, optional
+            Naming scheme for histograms stored in the inputfiles,
+            VARIABLE is replaced by the variable name, SAMPLE is replaced by the sample name.
+        outputpath : str, default '.'
+            Where to save the output plots and histograms, directory is created if it doesn't exist.
+        outputpattern : str, default 'VARIABLE'
+            Naming scheme for output plots, VARIABLE is replaced by the variable name.
+        outputformat : str or list[str], default 'pdf'
+            Format(s) to save output plots, has to be supported by ROOT.TCanvas.Print()
+        normalize : bool, default False
+            Scale all histograms to unity.
+        axes : {'linlog', 'lin', 'log'}
+            Draw plots with a linear y-axis, logarithmic y-axis, or both.
+        ylabel : str, default 'Events'
+            Label for y-axis of main plot (upper panel).
+        ylabelratio : str, default 'Data / Prediction'
+            Label for y-axis of lower panel.
+        yaxisrangeratio : tuple[float], default (0.0001, 1.9999)
+            Range of y-axis of lower panel, choose values just above/below a round number
+            to avoid the respective tick label.
+        ratiohlines : list[float or tuple[float]], default [1.]
+            Straight line(s) to draw in lower panel, if element is float a horizontal line is drawn at the given value,
+            if element is tuple of the form (x1, y1, x2, y2) a line is drawn from (x1,y1) to (x2,y2).
+        linewidth : int, default 1
+            Linewidth used for samples of category marker or line and for ratios,
+            corresponding to ROOT.TAttLine.
+        markersize : int, default 2
+            Markersize used for samples of category marker,
+            corresponding to ROOT.TAttMarker.
+        poslegend : tuple[float], default (0.4, 0.55, 0.93, 0.9)
+            Position of legend, specified by tuple (x1, y1, x2, y2).
+        ncolumnslegend : int, default 1
+            Number of columns used in legend.
+        boldlegend : bool, default False
+            Use bold font in legend.
+        text : str, default '36 fb^{-1} (13 TeV)'
+            Text to write on top right corner.
+        extratext : str, default '#splitline{Work in progress}{Simulation}'
+            Text to write next to CMS stamp.
+        height : int, default 1280
+            Height of plot in pixels.
+        width : int or None, default None
+            Width of plot in pixels, if None then width is chosen proportionally to height.
+        ipos : int, default 11
+            Position of CMS stamp + extratext, e.g., 0 for top left out of frame, 11 for top left inside frame.
+            For details see CMS_lumi.py.
+
+        """
 
         if inputfiles is None:
             inputfiles = []
 
         if ratiohlines is None:
-            ratiohlines = [1]
+            ratiohlines = [1.]
 
         self.variables = []
 
@@ -62,7 +146,7 @@ class PlotFactory:
         self.outputformat = outputformat
 
         self.normalize = normalize
-        if axes not in ['lin', 'log', 'linlog']:
+        if axes not in ['linlog', 'lin', 'log']:
             raise NotImplementedError('axes must be one of: lin, log, linlog')
         self.axes = axes
 
@@ -119,14 +203,13 @@ class PlotFactory:
         self._draw_plots()
         self._save_histos()
 
-        # TODO: implement exporting histos/trees
-        # fout = ROOT.TFile('/nfs/dust/cms/user/wolfmor/NTupleStuff/PUweights_data16EF.root', 'recreate')
-        # self.ratiohistos['n_pvdata:STACK'].Write()
-        # # for ratio in self.ratiohistos:
-        # #     self.ratiohistos[ratio].Write()
-        # fout.Close()
-
     def add_variables(self, variablelist):
+        """
+
+        Parameters
+        ----------
+        variablelist :
+        """
         for variable in variablelist:
             self.add_variable(variable)
 
@@ -1052,5 +1135,4 @@ class Ratio:
 
 
 if __name__ == '__main__':
-
     pass
