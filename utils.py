@@ -259,9 +259,9 @@ class PlotFactory:
                 # first book all histograms
                 for v in self.variables:
 
-                    if not v.vartoplot == v.name and v.name not in s.df.GetColumnNames():
+                    if not s.modifyvarname(v.vartoplot) == s.modifyvarname(v.name) and s.modifyvarname(v.name) not in s.df.GetColumnNames():
                         s.df = s.df.Define(
-                            v.name, v.vartoplot
+                            s.modifyvarname(v.name), s.modifyvarname(v.vartoplot)
                         )
 
                     if type(v.nbins) == str and 'flat' in v.nbins:
@@ -271,28 +271,28 @@ class PlotFactory:
                     if s.vectorselection is None:
                         if s.weight is None:
                             self.histos[v + s] = s.df.Histo1D(
-                                ('h' + str(v + s), '', v.nbins, v.axisrange[0], v.axisrange[1]), v.name
+                                ('h' + str(v + s), '', v.nbins, v.axisrange[0], v.axisrange[1]), s.modifyvarname(v.name)
                             )
                         else:
                             self.histos[v + s] = s.df.Define(
                                 '_w', s.weight
                             ).Histo1D(
-                                ('h' + str(v + s), '', v.nbins, v.axisrange[0], v.axisrange[1]), v.name, '_w'
+                                ('h' + str(v + s), '', v.nbins, v.axisrange[0], v.axisrange[1]), s.modifyvarname(v.name), '_w'
                             )
                     else:
                         if s.weight is None:
                             self.histos[v + s] = s.df.Define(
-                                v.name + '_pass', v.name + '[' + s.vectorselection + ']'
+                                s.modifyvarname(v.name) + '_pass', s.modifyvarname(v.name) + '[' + s.vectorselection + ']'
                             ).Histo1D(
-                                ('h' + str(v + s), '', v.nbins, v.axisrange[0], v.axisrange[1]), v.name + '_pass'
+                                ('h' + str(v + s), '', v.nbins, v.axisrange[0], v.axisrange[1]), s.modifyvarname(v.name) + '_pass'
                             )
                         else:
                             self.histos[v + s] = s.df.Define(
-                                v.name + '_pass', v.name + '[' + s.vectorselection + ']'
+                                s.modifyvarname(v.name) + '_pass', s.modifyvarname(v.name) + '[' + s.vectorselection + ']'
                             ).Define(
                                 '_w', s.weight
                             ).Histo1D(
-                                ('h' + str(v + s), '', v.nbins, v.axisrange[0], v.axisrange[1]), v.name + '_pass', '_w'
+                                ('h' + str(v + s), '', v.nbins, v.axisrange[0], v.axisrange[1]), s.modifyvarname(v.name) + '_pass', '_w'
                             )
 
                 # then trigger the filling of the histos
@@ -934,6 +934,7 @@ class TreeSample(Sample):
                  eventselection=None,
                  vectorselection=None,
                  weight=None,
+                 modifyvarname=lambda varname: varname,
 
                  color=ROOT.kBlack,
                  linestyle=ROOT.kSolid,
@@ -1029,6 +1030,8 @@ class TreeSample(Sample):
 
         print ' weight', weight
         self.weight = weight
+
+        self.modifyvarname = modifyvarname
 
         # TODO: implement usage of TreeSamples without RDataFrame with:
         # deactivation of unused branches via setbranchstatus
