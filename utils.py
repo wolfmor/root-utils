@@ -59,10 +59,10 @@ class PlotFactory:
                  ncolumnslegend=1,
                  boldlegend=False,
                  text='36 fb^{-1} (13 TeV)',
-                 extratext='#splitline{Work in progress}{Simulation}',
+                 extratext='Simulation Private Work',
                  height=1280,
                  width=None,
-                 ipos=11):
+                 ipos=0):
         """
         Parameters
         ----------
@@ -111,7 +111,7 @@ class PlotFactory:
             Height of plot in pixels.
         width : int or None, default None
             Width of plot in pixels, if None then width is chosen proportionally to height.
-        ipos : int, default 11
+        ipos : int, default 0
             Position of CMS stamp + extratext, e.g., 0 for top left out of frame, 11 for top left inside frame.
             For details see CMS_lumi.py.
 
@@ -252,7 +252,7 @@ class PlotFactory:
         makeflat = {}
         for s in self.stacksamples + self.markersamples + self.linesamples:
 
-            print s
+            print(s)
 
             if isinstance(s, TreeSample):
 
@@ -945,7 +945,7 @@ class TreeSample(Sample):
                  ntestfiles=0
                  ):
 
-        print 'Initializing', name
+        print('Initializing ' + name)
 
         Sample.__init__(self, category, name, title, color, linestyle, fillstyle, scaleto)
 
@@ -995,7 +995,7 @@ class TreeSample(Sample):
 
             self.smallchain = None
             if 'XSEC' in weight or 'NSIM' in weight:
-                print ' get small chain'
+                print(' get small chain')
                 self.smallchain = ROOT.TChain(tree)
                 if type(files) == list:
                     self.smallchain.Add(files[0], 1)
@@ -1007,14 +1007,14 @@ class TreeSample(Sample):
                     self.smallchain.GetEntry(0)
 
                     if 'XSEC' in weight:
-                        print ' get XSEC'
+                        print(' get XSEC')
                         if self.smallchain is not None:
                             weight = weight.replace('XSEC', str(self.smallchain.crossSection))
                         else:
                             weight = weight.replace('XSEC', '1.')
 
                     if 'NSIM' in weight:
-                        print ' get NSIM'
+                        print(' get NSIM')
                         if self.smallchain is not None:
                             weight = weight.replace('NSIM', str(self.smallchain.numSimEvents))
                         else:
@@ -1023,12 +1023,12 @@ class TreeSample(Sample):
                     print(' small chain is empty')
 
             if 'COUNTER' in weight:
-                print ' get COUNTER'
+                print(' get COUNTER')
                 self.counter = ROOT.RDataFrame('tCounter', files)
                 weight = weight.replace('COUNTER',
                                         str(round(self.counter.Count().GetValue(), 1)))
 
-        print ' weight', weight
+            print(' weight ' + weight)
         self.weight = weight
 
         self.modifyvarname = modifyvarname
