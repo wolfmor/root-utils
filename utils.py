@@ -560,6 +560,35 @@ class PlotFactory:
                         self.ratiohistos[v + r] = signalhisto.Clone(v + r)
                         self.ratiohistos[v + r].Divide(backgroundhisto)
 
+                elif r.category == 'efficiency':
+
+                    if not len(r.name.split(':')) == 2:
+                        raise NotImplementedError('cannot interpret efficiency')
+
+                    name_pass = r.name.split(':')[0]
+                    name_total = r.name.split(':')[1]
+
+                    if name_pass == 'STACK':
+                        histo_pass = self.sums[v].Clone('efficiency_passhisto')
+                    else:
+                        histo_pass = self.histos[v.name + name_pass].Clone('efficiency_passhisto')
+
+                    if name_total == 'STACK':
+                        histo_total = self.sums[v].Clone('efficiency_totalhisto')
+                    else:
+                        histo_total = self.histos[v.name + name_total].Clone('efficiency_totalhisto')
+
+                    if ROOT.TEfficiency.CheckConsistency(histo_pass, histo_total):
+
+                        self.ratiohistos[v + r + 'eff'] = ROOT.TEfficiency(histo_pass, histo_total)
+                        self.ratiohistos[v + r + 'eff'].SetName(r.name + 'eff')
+
+                        self.ratiohistos[v + r] = histo_pass.Clone(r.name + 'empty')
+                        self.ratiohistos[v + r].Reset()
+                    else:
+                        self.ratiohistos[v + r] = None
+                        print('skipping efficiency because histograms are not compatible')
+
                 else:
                     raise NotImplementedError('unknown ratio type')
 
@@ -654,6 +683,16 @@ class PlotFactory:
                 self.ratiohistos[v + r].SetMarkerSize(self.histos[v.name + r.name.split(':')[0]].GetMarkerSize())
                 self.ratiohistos[v + r].SetMarkerColor(self.histos[v.name + r.name.split(':')[0]].GetMarkerColor())
 
+                if r.category == 'efficiency':
+
+                    self.ratiohistos[str(v + r) + 'eff'].SetLineWidth(self.linewidth)
+                    self.ratiohistos[str(v + r) + 'eff'].SetLineStyle(self.histos[v.name + r.name.split(':')[0]].GetLineStyle())
+                    self.ratiohistos[str(v + r) + 'eff'].SetLineColor(self.histos[v.name + r.name.split(':')[0]].GetLineColor())
+
+                    self.ratiohistos[str(v + r) + 'eff'].SetMarkerSize(self.histos[v.name + r.name.split(':')[0]].GetMarkerSize())
+                    self.ratiohistos[str(v + r) + 'eff'].SetMarkerColor(self.histos[v.name + r.name.split(':')[0]].GetMarkerColor())
+
+
                 if isfirstratiohisto:
 
                     self.ratiohistos[v + r].SetMinimum(self.yaxisrangeratio[0])
@@ -721,12 +760,16 @@ class PlotFactory:
 
                         if r.name.split(':')[0] in [s.name for s in self.markersamples]:
                             self.ratiohistos[v + r].Draw('e x0 same')
+                            if r.category == 'efficiency':
+                                self.ratiohistos[str(v + r) + 'eff'].Draw('same')
                         # TODO: errors on ratio histos?
                         # elif r.name.split(':')[0] in [s.name for s in self.linesamples]:
                         #     self.ratiohistos[v + r].Draw('hist same')
                         #     self.ratiohistos[v + r].Draw('e x0 same')
                         else:
                             self.ratiohistos[v + r].Draw('hist same')
+                            if r.category == 'efficiency':
+                                self.ratiohistos[str(v + r) + 'eff'].Draw('same')
 
                         self.p.adjustLowerHisto(self.ratiohistos[v + r])
 
@@ -775,12 +818,17 @@ class PlotFactory:
 
                             if r.name.split(':')[0] in [s.name for s in self.markersamples]:
                                 self.ratiohistos[v + r].Draw('e x0 same')
+                                if r.category == 'efficiency':
+                                    self.ratiohistos[str(v + r) + 'eff'].Draw('same')
                             # TODO: errors on ratio histos?
                             # elif r.name.split(':')[0] in [s.name for s in self.linesamples]:
                             #     self.ratiohistos[v + r].Draw('hist same')
                             #     self.ratiohistos[v + r].Draw('e x0 same')
                             else:
                                 self.ratiohistos[v + r].Draw('hist same')
+                                if r.category == 'efficiency':
+                                    print('draw' + str(v + r) + 'eff')
+                                    self.ratiohistos[str(v + r) + 'eff'].Draw('same')
 
                             self.p.adjustLowerHisto(self.ratiohistos[v + r])
 
@@ -1142,7 +1190,7 @@ class Ratio:
         if variablestosave is None:
             variablestosave = []
 
-        if category not in ['ratio', 'cutsig', 'binsig', 'calibration']:
+        if category not in ['ratio', 'cutsig', 'binsig', 'calibration', 'efficiency']:
             raise NotImplementedError('unknown ratio category')
         self.category = category
 
@@ -1152,7 +1200,7 @@ class Ratio:
         self.variablestosave = variablestosave
 
     def __str__(self):
-        return self.name
+        return self.category + self.name
 
     def __add__(self, other):
         return str(self) + str(other)
