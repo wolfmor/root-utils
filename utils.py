@@ -827,7 +827,6 @@ class PlotFactory:
                             else:
                                 self.ratiohistos[v + r].Draw('hist same')
                                 if r.category == 'efficiency':
-                                    print('draw' + str(v + r) + 'eff')
                                     self.ratiohistos[str(v + r) + 'eff'].Draw('same')
 
                             self.p.adjustLowerHisto(self.ratiohistos[v + r])
