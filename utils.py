@@ -62,7 +62,8 @@ class PlotFactory:
                  extratext='Simulation Private Work',
                  height=1280,
                  width=None,
-                 ipos=0):
+                 ipos=0,
+                 uoflowbins=False):
         """
         Parameters
         ----------
@@ -114,6 +115,8 @@ class PlotFactory:
         ipos : int, default 0
             Position of CMS stamp + extratext, e.g., 0 for top left out of frame, 11 for top left inside frame.
             For details see CMS_lumi.py.
+        uoflowbins : bool, default False
+            Whether to plot the under- and overflow bins
 
         """
 
@@ -170,6 +173,7 @@ class PlotFactory:
         self.poslegend = poslegend
         self.ncolumnslegend = ncolumnslegend
         self.boldlegend = boldlegend
+        self.uoflowbins = uoflowbins
 
         self.histos = {}
         self.stacks = {}
@@ -372,11 +376,22 @@ class PlotFactory:
                     blindendbin = self.histos[v + blindsample].FindBin(float(blindend))
 
                     for blindbin in range(blindstartbin, blindendbin+1):
+
                         self.histos[v + blindsample].SetBinContent(blindbin, 0.)
+
+                        # also blind the under- and overflow bins
+                        if blindbin == 1:
+                            self.histos[v + blindsample].SetBinContent(0, 0.)
+                        if blindbin == self.histos[v + blindsample].GetNbinsX():
+                            self.histos[v + blindsample].SetBinContent(self.histos[v + blindsample].GetNbinsX() + 1, 0.)
 
             for s in self.stacksamples + self.markersamples + self.linesamples:
                 if not self.histos[v + s].GetSumw2N():
                     self.histos[v + s].Sumw2()
+
+                if self.uoflowbins:
+                    self.histos[v + s].GetXaxis().SetRange(0, self.histos[v + s].GetNbinsX() + 1)
+
 
             if len(self.stacksamples) > 0:
                 self.sums[v] = self.histos[v + self.stacksamples[0]].Clone('sum' + v.name)
@@ -654,6 +669,12 @@ class PlotFactory:
 
             print(v)
 
+            xlow = v.axisrange[0]
+            xhigh = v.axisrange[1]
+            if self.uoflowbins:
+                xlow = self.emptylinhistos[v].GetXaxis().GetBinLowEdge(0)
+                xhigh = self.emptylinhistos[v].GetXaxis().GetBinUpEdge(self.emptylinhistos[v].GetNbinsX() + 1)
+
             lines = []
             for ratiohline in self.ratiohlines:
 
@@ -662,7 +683,7 @@ class PlotFactory:
                     if not len(ratiohline) == 4:
                         raise NotImplementedError('cannot interpret ratiohline')
 
-                    ratiohline = [float(rhl.replace('START', str(v.axisrange[0])).replace('END', str(v.axisrange[1]))) if type(rhl) == str else rhl for rhl in ratiohline]
+                    ratiohline = [float(rhl.replace('START', str(xlow)).replace('END', str(xhigh))) if type(rhl) == str else rhl for rhl in ratiohline]
 
                     lines.append(ROOT.TLine(ratiohline[0], ratiohline[1], ratiohline[2], ratiohline[3]))
                     lines[-1].SetLineWidth(1)
@@ -670,7 +691,7 @@ class PlotFactory:
 
                 else:
 
-                    lines.append(ROOT.TLine(v.axisrange[0], ratiohline, v.axisrange[1], ratiohline))
+                    lines.append(ROOT.TLine(xlow, ratiohline, xhigh, ratiohline))
                     lines[-1].SetLineWidth(1)
                     lines[-1].SetLineColor(ROOT.kBlack)
 
