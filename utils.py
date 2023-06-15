@@ -59,10 +59,10 @@ class PlotFactory:
                  ncolumnslegend=1,
                  boldlegend=False,
                  text='36 fb^{-1} (13 TeV)',
-                 extratext='Simulation Private Work',
+                 extratext='#splitline{Private Work}{Simulation}',
                  height=1280,
                  width=None,
-                 ipos=0,
+                 ipos=11,
                  uoflowbins=False):
         """
         Parameters
@@ -1017,16 +1017,22 @@ class TreeSample(Sample):
 
         Sample.__init__(self, category, name, title, color, linestyle, fillstyle, scaleto)
 
+        filelist = []
+        if type(files) == list:
+            for f in files:
+                filelist += glob(f)
+        else:
+            filelist += glob(files)
+
         if ntestfiles:
-            if type(files) == list:
-                files = glob(files[0])[:ntestfiles]
-            else:
-                files = glob(files)[:ntestfiles]
+            filelist = filelist[:ntestfiles]
+
+        # print(min([os.path.getsize(f) for f in filelist]))
 
         if eventselection is None or eventselection == '' or eventselection == '1':
-            self.df = ROOT.RDataFrame(tree, files)
+            self.df = ROOT.RDataFrame(tree, filelist)
         else:
-            self.df = ROOT.RDataFrame(tree, files).Filter(eventselection, ' selection for ' + self.name)
+            self.df = ROOT.RDataFrame(tree, filelist).Filter(eventselection, ' selection for ' + self.name)
 
         if vectorselection is None or vectorselection == '' or vectorselection == '1':
             self.vectorselection = None
@@ -1065,10 +1071,13 @@ class TreeSample(Sample):
             if 'XSEC' in weight or 'NSIM' in weight:
                 print(' get small chain')
                 self.smallchain = ROOT.TChain(tree)
-                if type(files) == list:
-                    self.smallchain.Add(files[0], 1)
-                else:
-                    self.smallchain.Add(files, 1)
+                for f in filelist:
+                    thefile = ROOT.TFile(f, 'read')
+                    if thefile.Get(tree).GetEntries() > 0:
+                        self.smallchain.Add(f, 1)
+                        thefile.Close()
+                        break
+                    thefile.Close()
 
                 if self.smallchain.GetEntries() > 0:
 
@@ -1092,7 +1101,7 @@ class TreeSample(Sample):
 
             if 'COUNTER' in weight:
                 print(' get COUNTER')
-                self.counter = ROOT.RDataFrame('tCounter', files)
+                self.counter = ROOT.RDataFrame('tCounter', filelist)
                 weight = weight.replace('COUNTER',
                                         str(round(self.counter.Count().GetValue(), 1)))
 
