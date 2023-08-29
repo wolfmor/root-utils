@@ -5,6 +5,7 @@ source /cvmfs/sft.cern.ch/lcg/app/releases/ROOT/6.24.06/x86_64-centos7-gcc48-opt
 """
 
 import os
+import sys
 import ctypes
 import ROOT
 from glob import glob
@@ -1010,7 +1011,11 @@ class TreeSample(Sample):
 
                  scaleto=None,
 
-                 ntestfiles=0
+                 ntestfiles=0,
+                 checkcounter=False,
+
+                 friendtree='tFriend',
+                 friendfileslambda=None
                  ):
 
         print('Initializing ' + name)
@@ -1027,25 +1032,45 @@ class TreeSample(Sample):
         if ntestfiles:
             filelist = filelist[:ntestfiles]
 
-        # print(min([os.path.getsize(f) for f in filelist]))
+        if friendfileslambda is None:
 
-        if eventselection is None or eventselection == '' or eventselection == '1':
-            self.df = ROOT.RDataFrame(tree, filelist)
+            if eventselection is None or eventselection == '' or eventselection == '1':
+                self.df = ROOT.RDataFrame(tree, filelist)
+            else:
+                self.df = ROOT.RDataFrame(tree, filelist).Filter(eventselection, ' selection for ' + self.name)
+
         else:
-            self.df = ROOT.RDataFrame(tree, filelist).Filter(eventselection, ' selection for ' + self.name)
+
+            self.chain = ROOT.TChain(tree)
+            for f in filelist:
+                self.chain.Add(f)
+
+            self.friendchain = ROOT.TChain(friendtree)
+            for f in filelist:
+                self.friendchain.Add(friendfileslambda(f))
+
+            self.chain.AddFriend(self.friendchain)
+
+            if eventselection is None or eventselection == '' or eventselection == '1':
+                self.df = ROOT.RDataFrame(self.chain)
+            else:
+                self.df = ROOT.RDataFrame(self.chain).Filter(eventselection, ' selection for ' + self.name)
+
 
         if vectorselection is None or vectorselection == '' or vectorselection == '1':
             self.vectorselection = None
         else:
             self.vectorselection = vectorselection
 
-
+        self.XSEC = None
+        self.NSIM = None
+        self.COUNTER = None
         if weight is not None:
 
             weighttosplit = ''
             oktoreplace = True
             for ichar, character in enumerate(weight):
-                if character in ['/', '*'] and oktoreplace:
+                if character in ['/', '*', '(', ')'] and oktoreplace:
                     weighttosplit += 'SPLITHERE'
                 else:
                     weighttosplit += character
@@ -1057,15 +1082,15 @@ class TreeSample(Sample):
                     oktoreplace = True
 
             weights = weighttosplit.split('SPLITHERE')
+
             for w in weights:
-                if w in self.df.GetColumnNames() or w in ['XSEC', 'NSIM', 'COUNTER'] or w.replace('.', '', 1).isdigit(): continue
+                if w in self.df.GetColumnNames() or w in ['XSEC', 'NSIM', 'COUNTER', ''] or w.replace('.', '', 1).isdigit(): continue
                 wargs = w.split(':=[')
                 if len(wargs) == 2:
                     self.df = self.df.Define(wargs[0], wargs[1].replace(']', ''))
                     weight = weight.replace(':=[' + wargs[1], '')
                 else:
                     raise NotImplementedError('cannot interpret weight: ', w)
-
 
             self.smallchain = None
             if 'XSEC' in weight or 'NSIM' in weight:
@@ -1086,14 +1111,16 @@ class TreeSample(Sample):
                     if 'XSEC' in weight:
                         print(' get XSEC')
                         if self.smallchain is not None:
-                            weight = weight.replace('XSEC', str(self.smallchain.crossSection))
+                            self.XSEC = self.smallchain.crossSection
+                            weight = weight.replace('XSEC', str(self.XSEC))
                         else:
                             weight = weight.replace('XSEC', '1.')
 
                     if 'NSIM' in weight:
                         print(' get NSIM')
                         if self.smallchain is not None:
-                            weight = weight.replace('NSIM', str(self.smallchain.numSimEvents))
+                            self.NSIM = self.smallchain.numSimEvents
+                            weight = weight.replace('NSIM', str(self.NSIM))
                         else:
                             weight = weight.replace('NSIM', '1.')
                 else:
@@ -1102,11 +1129,38 @@ class TreeSample(Sample):
             if 'COUNTER' in weight:
                 print(' get COUNTER')
                 self.counter = ROOT.RDataFrame('tCounter', filelist)
-                weight = weight.replace('COUNTER',
-                                        str(round(self.counter.Count().GetValue(), 1)))
+                self.COUNTER = self.counter.Count().GetValue()
+                weight = weight.replace('COUNTER', str(round(self.COUNTER, 1)))
 
             print(' weight ' + weight)
         self.weight = weight
+
+        if checkcounter:
+            print(' check COUNTER/NSIM')
+            if self.NSIM is None:
+
+                self.smallchain = ROOT.TChain(tree)
+                for f in filelist:
+                    thefile = ROOT.TFile(f, 'read')
+                    if thefile.Get(tree).GetEntries() > 0:
+                        self.smallchain.Add(f, 1)
+                        thefile.Close()
+                        break
+                    thefile.Close()
+
+                if self.smallchain.GetEntries() > 0:
+                    self.smallchain.GetEntry(0)
+                    self.NSIM = self.smallchain.numSimEvents
+
+            if self.COUNTER is None:
+
+                self.counter = ROOT.RDataFrame('tCounter', filelist)
+                self.COUNTER = self.counter.Count().GetValue()
+
+            print('  COUNTER: ' + str(int(self.COUNTER)))
+            print('  NSIM: ' + str(int(self.NSIM)))
+            print('  ' + str(round(self.COUNTER / self.NSIM, 3) * 100) + '% of events in ' + str(len(filelist)) + ' files\n')
+
 
         self.modifyvarname = modifyvarname
 
