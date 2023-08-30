@@ -1041,13 +1041,21 @@ class TreeSample(Sample):
 
         else:
 
+            friendfilelist = []
+            for f in filelist:
+                if os.path.exists(friendfileslambda(f)):
+                    friendfilelist.append(friendfileslambda(f))
+                else:
+                    print('skipping file because it has no friend:\n' + f)
+                    filelist.remove(f)
+
+            self.friendchain = ROOT.TChain(friendtree)
+            for f in friendfilelist:
+                self.friendchain.Add(f)
+
             self.chain = ROOT.TChain(tree)
             for f in filelist:
                 self.chain.Add(f)
-
-            self.friendchain = ROOT.TChain(friendtree)
-            for f in filelist:
-                self.friendchain.Add(friendfileslambda(f))
 
             self.chain.AddFriend(self.friendchain)
 
