@@ -259,7 +259,7 @@ class PlotFactory:
 
             print(s)
 
-            if isinstance(s, TreeSample):
+            if isinstance(s, TreeSample) and not s.usehistocache:
 
                 # first book all histograms
                 for v in self.variables:
@@ -276,20 +276,23 @@ class PlotFactory:
                     if s.vectorselection is None:
                         if s.weight is None:
                             self.histos[v + s] = s.df.Histo1D(
-                                ('h' + str(v + s), '', v.nbins, v.axisrange[0], v.axisrange[1]), s.modifyvarname(v.name)
+                                (self.inputpattern.replace('VARIABLE', str(v)).replace('SAMPLE', str(s)), '',
+                                 v.nbins, v.axisrange[0], v.axisrange[1]), s.modifyvarname(v.name)
                             )
                         else:
                             self.histos[v + s] = s.df.Define(
                                 '_w', s.weight
                             ).Histo1D(
-                                ('h' + str(v + s), '', v.nbins, v.axisrange[0], v.axisrange[1]), s.modifyvarname(v.name), '_w'
+                                (self.inputpattern.replace('VARIABLE', str(v)).replace('SAMPLE', str(s)), '',
+                                 v.nbins, v.axisrange[0], v.axisrange[1]), s.modifyvarname(v.name), '_w'
                             )
                     else:
                         if s.weight is None:
                             self.histos[v + s] = s.df.Define(
                                 s.modifyvarname(v.name) + '_pass', s.modifyvarname(v.name) + '[' + s.vectorselection + ']'
                             ).Histo1D(
-                                ('h' + str(v + s), '', v.nbins, v.axisrange[0], v.axisrange[1]), s.modifyvarname(v.name) + '_pass'
+                                (self.inputpattern.replace('VARIABLE', str(v)).replace('SAMPLE', str(s)), '',
+                                 v.nbins, v.axisrange[0], v.axisrange[1]), s.modifyvarname(v.name) + '_pass'
                             )
                         else:
                             self.histos[v + s] = s.df.Define(
@@ -297,7 +300,8 @@ class PlotFactory:
                             ).Define(
                                 '_w', s.weight
                             ).Histo1D(
-                                ('h' + str(v + s), '', v.nbins, v.axisrange[0], v.axisrange[1]), s.modifyvarname(v.name) + '_pass', '_w'
+                                (self.inputpattern.replace('VARIABLE', str(v)).replace('SAMPLE', str(s)), '',
+                                 v.nbins, v.axisrange[0], v.axisrange[1]), s.modifyvarname(v.name) + '_pass', '_w'
                             )
 
                 # then trigger the filling of the histos
@@ -310,15 +314,18 @@ class PlotFactory:
 
             else:
 
+                if isinstance(s, TreeSample):
+                    s.file = ROOT.TFile(self.outputpath + '/histos_' + str(s) + '.root', 'read')
+
                 for v in self.variables:
 
                     if s.file is None:
                         self.histos[v + s] = self.inputfiles[s.inputfileindex].Get(
-                            self.inputpattern.replace('VARIABLE', v.vartoplot).replace('SAMPLE', s.name)
+                            self.inputpattern.replace('VARIABLE', str(v)).replace('SAMPLE', str(s))
                         )
                     else:
                         self.histos[v + s] = s.file.Get(
-                            self.inputpattern.replace('VARIABLE', v.vartoplot).replace('SAMPLE', s.name)
+                            (s.name + '/' if isinstance(s, TreeSample) else '') + self.inputpattern.replace('VARIABLE', str(v)).replace('SAMPLE', str(s))
                         )
 
                     if type(v.rebin) == list:
@@ -893,7 +900,10 @@ class PlotFactory:
 
             print('\n# Save Histos')
 
-            fout = ROOT.TFile(self.outputpath + '/histos.root', 'recreate')
+            if len(self.stacksamples + self.markersamples + self.linesamples) == 1:
+                fout = ROOT.TFile(self.outputpath + '/histos_' + str((self.stacksamples + self.markersamples + self.linesamples)[0]) + '.root', 'recreate')
+            else:
+                fout = ROOT.TFile(self.outputpath + '/histos.root', 'recreate')
             dirout = {}
 
             for r in self.ratios:
@@ -1015,7 +1025,9 @@ class TreeSample(Sample):
                  checkcounter=False,
 
                  friendtree='tFriend',
-                 friendfileslambda=None
+                 friendfileslambda=None,
+
+                 usehistocache=False
                  ):
 
         print('Initializing ' + name)
@@ -1171,6 +1183,7 @@ class TreeSample(Sample):
 
 
         self.modifyvarname = modifyvarname
+        self.usehistocache = usehistocache
 
         # TODO: implement usage of TreeSamples without RDataFrame with:
         # deactivation of unused branches via setbranchstatus
