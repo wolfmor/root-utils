@@ -327,6 +327,14 @@ class PlotFactory:
                         self.histos[v + s] = s.file.Get(
                             (s.name + '/' if isinstance(s, TreeSample) else '') + self.inputpattern.replace('VARIABLE', str(v)).replace('SAMPLE', str(s))
                         )
+                    
+                    self.histos[v + s].GetXaxis().SetRangeUser(v.axisrange[0], v.axisrange[1])
+                    self.histos[v + s].UseCurrentStyle()
+
+
+            for v in self.variables:
+
+                if not v.rebin == 1:
 
                     if type(v.rebin) == list:
                         self.histos[v + s] = self.histos[v + s].Rebin(
@@ -334,9 +342,6 @@ class PlotFactory:
                         )
                     else:
                         self.histos[v + s].Rebin(v.rebin)
-
-                    self.histos[v + s].GetXaxis().SetRangeUser(v.axisrange[0], v.axisrange[1])
-                    self.histos[v + s].UseCurrentStyle()
 
 
         for iv, v in enumerate(self.variables):
