@@ -143,8 +143,10 @@ class PlotFactory:
         else:
             self.outputpath = outputpath
 
-        if not os.path.exists(outputpath):
-            os.makedirs(outputpath)
+        self.outputpath = self.outputpath.replace('ht5/ht', 'ht5overht')
+
+        if not os.path.exists(self.outputpath):
+            os.makedirs(self.outputpath)
 
         self.outputpattern = outputpattern
         self.outputformat = outputformat
@@ -315,12 +317,20 @@ class PlotFactory:
             else:
 
                 if isinstance(s, TreeSample):
-                    if os.path.exists(self.outputpath + '/histos_' + str(s) + '.root'):
-                        print(' taking histos from ' + self.outputpath + '/histos_' + str(s) + '.root')
-                        s.file = ROOT.TFile(self.outputpath + '/histos_' + str(s) + '.root', 'read')
-                    else:
-                        print(' taking histos from ' + self.outputpath + '/histos.root')
-                        s.file = ROOT.TFile(self.outputpath + '/histos.root', 'read')
+
+                    possiblefiles = glob(self.outputpath + '_part*/histos.root') \
+                                    + glob(self.outputpath + '_part*/histos_' + str(s) + '.root') \
+                                    + [
+                                        self.outputpath + '/histos_' + str(s) + '.root',
+                                        self.outputpath + '/histos.root',
+                                    ]
+
+                    for possiblefile in possiblefiles:
+                        if os.path.exists(possiblefile):
+                            s.file = ROOT.TFile(possiblefile, 'read')
+                            if str(s) in [key.GetName() for key in list(s.file.GetListOfKeys())]:
+                                print(' taking histos from ' + possiblefile)
+                                break
 
                 for v in self.variables:
 
@@ -369,7 +379,7 @@ class PlotFactory:
                 # in order to make sure to use existing bin edges
                 roundedquantiles = []
                 for q in quantiles:
-                    roundedquantiles.append(round(q, 2))
+                    roundedquantiles.append(round(q, 2))  # TODO: this is not guaranteed to work
                 quantiles = array('d', roundedquantiles)
 
                 quantiles.insert(0, v.axisrange[0])
@@ -396,12 +406,15 @@ class PlotFactory:
                     for blindbin in range(blindstartbin, blindendbin+1):
 
                         self.histos[v + blindsample].SetBinContent(blindbin, 0.)
+                        self.histos[v + blindsample].SetBinError(blindbin, 0.)
 
                         # also blind the under- and overflow bins
                         if blindbin == 1:
                             self.histos[v + blindsample].SetBinContent(0, 0.)
+                            self.histos[v + blindsample].SetBinError(0, 0.)
                         if blindbin == self.histos[v + blindsample].GetNbinsX():
                             self.histos[v + blindsample].SetBinContent(self.histos[v + blindsample].GetNbinsX() + 1, 0.)
+                            self.histos[v + blindsample].SetBinError(self.histos[v + blindsample].GetNbinsX() + 1, 0.)
 
             for s in self.stacksamples + self.markersamples + self.linesamples:
                 if not self.histos[v + s].GetSumw2N():
@@ -713,6 +726,16 @@ class PlotFactory:
                     self.ratiohistos[str(v + r) + 'eff'].SetMarkerSize(self.histos[v.name + r.name.split(':')[0]].GetMarkerSize())
                     self.ratiohistos[str(v + r) + 'eff'].SetMarkerColor(self.histos[v.name + r.name.split(':')[0]].GetMarkerColor())
 
+                if r.drawoptions is not None:
+
+                    for drawopt in r.drawoptions:
+
+                        if ':=' in drawopt:
+                            self.ratiohistos[v + r + drawopt] = self.ratiohistos[v + r].Clone(v + r + drawopt)
+                            self.ratiohistos[v + r + drawopt].SetFillStyle(int(drawopt.split(':=')[1]))
+                            self.ratiohistos[v + r + drawopt].SetFillColor({s.name: s for s in self.stacksamples + self.markersamples + self.linesamples}[r.name.split(':')[0]].color)
+
+
 
                 if isfirstratiohisto:
 
@@ -779,18 +802,29 @@ class PlotFactory:
 
                         if self.ratiohistos[v + r] is None: continue
 
-                        if r.name.split(':')[0] in [s.name for s in self.markersamples]:
-                            self.ratiohistos[v + r].Draw('e x0 same')
-                            if r.category == 'efficiency':
-                                self.ratiohistos[str(v + r) + 'eff'].Draw('same')
-                        # TODO: errors on ratio histos?
-                        # elif r.name.split(':')[0] in [s.name for s in self.linesamples]:
-                        #     self.ratiohistos[v + r].Draw('hist same')
-                        #     self.ratiohistos[v + r].Draw('e x0 same')
+                        if r.drawoptions is not None:
+
+                            for drawopt in r.drawoptions:
+
+                                if ':=' in drawopt:
+                                    self.ratiohistos[v + r + drawopt].Draw(drawopt.split(':=')[0] + 'same')
+                                else:
+                                    self.ratiohistos[v + r].Draw(drawopt + 'same')
+
                         else:
-                            self.ratiohistos[v + r].Draw('hist same')
-                            if r.category == 'efficiency':
-                                self.ratiohistos[str(v + r) + 'eff'].Draw('same')
+
+                            if r.name.split(':')[0] in [s.name for s in self.markersamples]:
+                                self.ratiohistos[v + r].Draw('e x0 same')
+                                if r.category == 'efficiency':
+                                    self.ratiohistos[str(v + r) + 'eff'].Draw('same')
+                            # TODO: errors on ratio histos?
+                            # elif r.name.split(':')[0] in [s.name for s in self.linesamples]:
+                            #     self.ratiohistos[v + r].Draw('hist same')
+                            #     self.ratiohistos[v + r].Draw('e x0 same')
+                            else:
+                                self.ratiohistos[v + r].Draw('hist same')
+                                if r.category == 'efficiency':
+                                    self.ratiohistos[str(v + r) + 'eff'].Draw('same')
 
                         self.p.adjustLowerHisto(self.ratiohistos[v + r])
 
@@ -832,23 +866,35 @@ class PlotFactory:
                     for lowerpad in ['1_2', '2_2']:
 
                         subpads[lowerpad].cd()
+
                         # TODO: draw small arrows if ratio out of range
                         for r in self.ratios:
 
                             if self.ratiohistos[v + r] is None: continue
 
-                            if r.name.split(':')[0] in [s.name for s in self.markersamples]:
-                                self.ratiohistos[v + r].Draw('e x0 same')
-                                if r.category == 'efficiency':
-                                    self.ratiohistos[str(v + r) + 'eff'].Draw('same')
-                            # TODO: errors on ratio histos?
-                            # elif r.name.split(':')[0] in [s.name for s in self.linesamples]:
-                            #     self.ratiohistos[v + r].Draw('hist same')
-                            #     self.ratiohistos[v + r].Draw('e x0 same')
+                            if r.drawoptions is not None:
+
+                                for drawopt in r.drawoptions:
+
+                                    if ':=' in drawopt:
+                                        self.ratiohistos[v + r + drawopt].Draw(drawopt.split(':=')[0] + 'same')
+                                    else:
+                                        self.ratiohistos[v + r].Draw(drawopt + 'same')
+
                             else:
-                                self.ratiohistos[v + r].Draw('hist same')
-                                if r.category == 'efficiency':
-                                    self.ratiohistos[str(v + r) + 'eff'].Draw('same')
+
+                                if r.name.split(':')[0] in [s.name for s in self.markersamples]:
+                                    self.ratiohistos[v + r].Draw('e x0 same')
+                                    if r.category == 'efficiency':
+                                        self.ratiohistos[str(v + r) + 'eff'].Draw('same')
+                                # TODO: errors on ratio histos?
+                                # elif r.name.split(':')[0] in [s.name for s in self.linesamples]:
+                                #     self.ratiohistos[v + r].Draw('hist same')
+                                #     self.ratiohistos[v + r].Draw('e x0 same')
+                                else:
+                                    self.ratiohistos[v + r].Draw('hist same')
+                                    if r.category == 'efficiency':
+                                        self.ratiohistos[str(v + r) + 'eff'].Draw('same')
 
                             self.p.adjustLowerHisto(self.ratiohistos[v + r])
 
@@ -1040,6 +1086,7 @@ class TreeSample(Sample):
 
                  ntestfiles=0,
                  checkcounter=False,
+                 skipemptyfiles=False,
 
                  friendtree='tFriend',
                  friendfileslambda=None,
@@ -1070,22 +1117,43 @@ class TreeSample(Sample):
             if ntestfiles:
                 filelist = filelist[:ntestfiles]
 
+            skipfiles_empty = []
+            if skipemptyfiles:
+                for f in filelist:
+                    testfile = ROOT.TFile(f)
+                    testtree = testfile.Get(tree)
+                    if not testtree.GetEntries() > 0:
+                        skipfiles_empty.append(f)
+                    testfile.Close()
+
+                print(' skipping ' + str(len(skipfiles_empty)) + ' of ' + str(len(filelist)) + ' files because they are empty')
+
+                # don't remove from filelist because full list is needed for COUNTER
+                # for f in skipfiles_empty:
+                #     filelist.remove(f)
+
             if friendfileslambda is None:
 
                 if eventselection is None or eventselection == '' or eventselection == '1':
-                    self.df = ROOT.RDataFrame(tree, filelist)
+                    self.df = ROOT.RDataFrame(tree, [f for f in filelist if f not in skipfiles_empty])
                 else:
-                    self.df = ROOT.RDataFrame(tree, filelist).Filter(eventselection, ' selection for ' + self.name)
+                    self.df = ROOT.RDataFrame(tree, [f for f in filelist if f not in skipfiles_empty]).Filter(eventselection, ' selection for ' + self.name)
 
             else:
 
                 friendfilelist = []
+                skipfiles_nofriend = []
                 for f in filelist:
+                    if skipemptyfiles and f in skipfiles_empty: continue
                     if os.path.exists(friendfileslambda(f)):
                         friendfilelist.append(friendfileslambda(f))
                     else:
-                        print('skipping file because it has no friend:\n' + f)
-                        filelist.remove(f)
+                        print(' skipping file because it has no friend:\n' + f)
+                        skipfiles_nofriend.append(f)
+
+                # here it's ok to remove the files
+                for f in skipfiles_nofriend:
+                    filelist.remove(f)
 
                 self.friendchain = ROOT.TChain(friendtree)
                 for f in friendfilelist:
@@ -1093,6 +1161,7 @@ class TreeSample(Sample):
 
                 self.chain = ROOT.TChain(tree)
                 for f in filelist:
+                    if skipemptyfiles and f in skipfiles_empty: continue
                     self.chain.Add(f)
 
                 self.chain.AddFriend(self.friendchain)
@@ -1281,17 +1350,17 @@ class Variable:
         return str(self) + str(other)
 
     @classmethod
-    def fromlist(cls, lst):
+    def fromlist(cls, lst, savehistos=False):
         if len(lst) == 5:
-            return cls(name=lst[0], title=lst[1], axisrange=lst[2], rebin=lst[3], nbins=lst[4])
+            return cls(name=lst[0], title=lst[1], axisrange=lst[2], rebin=lst[3], nbins=lst[4], savehistos=savehistos)
         elif len(lst) == 6:
-            return cls(name=lst[0], title=lst[1], vartoplot=lst[2], axisrange=lst[3], rebin=lst[4], nbins=lst[5])
+            return cls(name=lst[0], title=lst[1], vartoplot=lst[2], axisrange=lst[3], rebin=lst[4], nbins=lst[5], savehistos=savehistos)
         else:
             raise NotImplementedError('cannot interpret lists of length ' + str(len(lst)))
 
 
 class Ratio:
-    def __init__(self, category, name, savehistos=False, variablestosave=None):
+    def __init__(self, category, name, savehistos=False, variablestosave=None, drawoptions=None):
 
         if variablestosave is None:
             variablestosave = []
@@ -1304,6 +1373,7 @@ class Ratio:
 
         self.savehistos = savehistos
         self.variablestosave = variablestosave
+        self.drawoptions = drawoptions
 
     def __str__(self):
         return self.category + self.name
