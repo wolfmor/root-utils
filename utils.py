@@ -6,8 +6,10 @@ source /cvmfs/sft.cern.ch/lcg/app/releases/ROOT/6.24.06/x86_64-centos7-gcc48-opt
 
 import os
 import sys
+import math
 import ctypes
 import ROOT
+from copy import copy
 from glob import glob
 from array import array
 from plotstyle import Plotstyle
@@ -46,6 +48,7 @@ class PlotFactory:
                  inputfiles=None,
                  inputpattern='VARIABLESAMPLE',
                  outputpath='.',
+                 outputsubfolder='',
                  outputpattern='VARIABLE',
                  outputformat='pdf',
                  normalize=False,
@@ -60,6 +63,7 @@ class PlotFactory:
                  ncolumnslegend=1,
                  boldlegend=False,
                  text='36 fb^{-1} (13 TeV)',
+                 cmstext='CMS',
                  extratext='#splitline{Private Work}{Simulation}',
                  height=1280,
                  width=None,
@@ -133,6 +137,8 @@ class PlotFactory:
         self.markersamples = []
         self.linesamples = []
 
+        self.groups = {}
+
         self.ratios = []
 
         self.inputfiles = [ROOT.TFile(inputfile) for inputfile in inputfiles]
@@ -145,8 +151,15 @@ class PlotFactory:
 
         self.outputpath = self.outputpath.replace('ht5/ht', 'ht5overht')
 
-        if not os.path.exists(self.outputpath):
-            os.makedirs(self.outputpath)
+        if outputsubfolder[-1] == '/':
+            outputsubfolder = outputsubfolder[:-1]
+        if outputsubfolder[0] == '/':
+            self.outputsubfolder = outputsubfolder
+        else:
+            self.outputsubfolder = '/' + outputsubfolder
+
+        if not os.path.exists(self.outputpath + self.outputsubfolder):
+            os.makedirs(self.outputpath + self.outputsubfolder)
 
         self.outputpattern = outputpattern
         self.outputformat = outputformat
@@ -168,6 +181,7 @@ class PlotFactory:
         self.p = None
         self.text = text
         self.extratext = extratext
+        self.cmstext = cmstext
         self.height = height
         self.width = width
         self.ipos = ipos
@@ -193,7 +207,7 @@ class PlotFactory:
             else:
                 self.width = int(1.3 * self.height)
 
-        self.p = Plotstyle(text=self.text, extratext=self.extratext, H_ref=self.height, W_ref=self.width, iPos=self.ipos)
+        self.p = Plotstyle(text=self.text, extratext=self.extratext, cmstext=self.cmstext, H_ref=self.height, W_ref=self.width, iPos=self.ipos)
         mystyle = self.p.setStyle()
         mystyle.cd()
 
@@ -245,6 +259,16 @@ class PlotFactory:
         else:
             raise NotImplementedError('unknown sample category')
 
+        if sample.group is not None:
+
+            if sample.group in [str(s) for s in self.stacksamples + self.markersamples + self.linesamples]:
+                raise AssertionError(sample.group + ' is a duplicate (names must be unique)')
+
+            if sample.group in self.groups.keys():
+                self.groups[sample.group].append(sample)
+            else:
+                self.groups[sample.group] = [sample]
+
     def add_ratios(self, ratiolist):
         for ratio in ratiolist:
             self.add_ratio(ratio)
@@ -273,7 +297,7 @@ class PlotFactory:
 
                     if type(v.nbins) == str and 'flat' in v.nbins:
                         makeflat[v] = v.nbins
-                        v.nbins = (v.axisrange[1] - v.axisrange[0]) * 100  # TODO: might be problematic for large ranges
+                        v.nbins = 1000
 
                     if s.vectorselection is None:
                         if s.weight is None:
@@ -318,12 +342,16 @@ class PlotFactory:
 
                 if isinstance(s, TreeSample):
 
-                    possiblefiles = glob(self.outputpath + '_part*/histos.root') \
-                                    + glob(self.outputpath + '_part*/histos_' + str(s) + '.root') \
-                                    + [
-                                        self.outputpath + '/histos_' + str(s) + '.root',
-                                        self.outputpath + '/histos.root',
-                                    ]
+                    possiblefiles = [self.outputpath + self.outputsubfolder + '/histos_' + str(s) + '.root'] \
+                                    + glob(self.outputpath + '/era*/histos_' + str(s) + '.root') \
+                                    + glob(self.outputpath + '/era*/histos.root') \
+                                    + glob(self.outputpath + '/part*/histos_' + str(s) + '.root') \
+                                    + glob(self.outputpath + '/part*/histos.root') \
+                                    + glob(self.outputpath + '/era*/part*/histos_' + str(s) + '.root') \
+                                    + glob(self.outputpath + '/era*/part*/histos.root') \
+                                    + glob(self.outputpath + self.outputsubfolder + '_part*/histos_' + str(s) + '.root') \
+                                    + glob(self.outputpath + self.outputsubfolder + '_part*/histos.root') \
+                                    + [self.outputpath + self.outputsubfolder + '/histos.root']
 
                     for possiblefile in possiblefiles:
                         if os.path.exists(possiblefile):
@@ -334,15 +362,31 @@ class PlotFactory:
 
                 for v in self.variables:
 
+                    if type(v.nbins) == str and 'flat' in v.nbins:
+                        makeflat[v] = v.nbins
+
                     if s.file is None:
-                        self.histos[v + s] = self.inputfiles[s.inputfileindex].Get(
-                            self.inputpattern.replace('VARIABLE', str(v)).replace('SAMPLE', str(s))
-                        )
+
+                        if isinstance(s, TreeSample): raise AssertionError('No histo cache file found for TreeSample' + str(s))
+
+                        if s.inputpattern is None:
+                            self.histos[v + s] = self.inputfiles[s.inputfileindex if v.inputfileindex is None else v.inputfileindex].Get(
+                                self.inputpattern.replace('VARIABLE', str(v)).replace('SAMPLE', str(s))
+                            )
+                        else:
+                            self.histos[v + s] = self.inputfiles[s.inputfileindex if v.inputfileindex is None else v.inputfileindex].Get(
+                                s.inputpattern.replace('VARIABLE', str(v)).replace('SAMPLE', str(s))
+                            )
                     else:
-                        self.histos[v + s] = s.file.Get(
-                            (s.name + '/' if isinstance(s, TreeSample) else '') + self.inputpattern.replace('VARIABLE', str(v)).replace('SAMPLE', str(s))
-                        )
-                    
+                        if isinstance(s, TreeSample) or s.inputpattern is None:
+                            self.histos[v + s] = s.file.Get(
+                                (s.name + '/' if isinstance(s, TreeSample) else '') + self.inputpattern.replace('VARIABLE', str(v)).replace('SAMPLE', str(s))
+                            )
+                        else:
+                            self.histos[v + s] = s.file.Get(
+                                s.inputpattern.replace('VARIABLE', str(v)).replace('SAMPLE', str(s))
+                            )
+
                     self.histos[v + s].GetXaxis().SetRangeUser(v.axisrange[0], v.axisrange[1])
                     self.histos[v + s].UseCurrentStyle()
 
@@ -357,6 +401,26 @@ class PlotFactory:
                         )
                     else:
                         self.histos[v + s].Rebin(v.rebin)
+
+        for g in self.groups:
+
+            group = copy(self.groups[g][0])
+            group.name = g
+            group.group = None
+            if group.category == 'stack':
+                self.stacksamples.append(group)
+            elif group.category == 'marker':
+                self.markersamples.append(group)
+            elif group.category == 'line':
+                self.linesamples.append(group)
+            else:
+                raise NotImplementedError('unknown sample category')
+
+            for v in self.variables:
+                self.histos[v + g] = self.histos[v + self.groups[g][0]].Clone(g + v.name)
+                self.histos[v + g].Reset('ICESM')
+                for part in self.groups[g]:
+                    self.histos[v + g].Add(self.histos[v + part])
 
 
         for iv, v in enumerate(self.variables):
@@ -376,10 +440,9 @@ class PlotFactory:
                 quantiles = array('d', (flatnbins-1)*[0.])
                 self.histos[v + flatsample].GetQuantiles(flatnbins-1, quantiles, p)
 
-                # in order to make sure to use existing bin edges
-                roundedquantiles = []
-                for q in quantiles:
-                    roundedquantiles.append(round(q, 2))  # TODO: this is not guaranteed to work
+                # make sure to use existing bin edges
+                existingbins = [self.histos[v + flatsample].GetBinLowEdge(b) for b in range(self.histos[v + flatsample].GetNbinsX() + 2)]
+                roundedquantiles = [min(existingbins, key=lambda x: abs(x - q)) for q in quantiles]
                 quantiles = array('d', roundedquantiles)
 
                 quantiles.insert(0, v.axisrange[0])
@@ -459,7 +522,8 @@ class PlotFactory:
                         scaletotarget = self.histos[str(v) + scaletoargs[0]].Integral(scaletostartbin, scaletoendbin)
 
                     if self.histos[v + s].Integral() > 0:
-                        self.histos[v + s].Scale(scaletotarget / self.histos[v + s].Integral())
+                        self.histos[v + s].Scale(scaletotarget / self.histos[v + s].Integral(scaletostartbin, scaletoendbin))
+
 
                 elif len(scaletoargs) == 1 and scaletoargs[0].replace('.', '', 1).isdigit():
 
@@ -473,19 +537,19 @@ class PlotFactory:
             if len(self.stacksamples) > 0:
                 self.stacks[v] = ROOT.THStack('stack' + v.name, '')
                 for s in self.stacksamples:
-                    self.stacks[v].Add(self.histos[v + s])
+                    if s.group is None: self.stacks[v].Add(self.histos[v + s])
 
             if iv == 0:
-                for s in self.markersamples:
-                    if len(s.title) > 0:
+                for s in self.markersamples[::-1]:
+                    if len(s.title) > 0 and s.group is None:
                         self.legend.AddEntry(self.histos[v + s], s.title, 'pe')
 
                 for s in self.stacksamples[::-1]:
-                    if len(s.title) > 0:
+                    if len(s.title) > 0 and s.group is None:
                         self.legend.AddEntry(self.histos[v + s], s.title, 'f')
 
                 for s in self.linesamples:
-                    if len(s.title) > 0:
+                    if len(s.title) > 0 and s.group is None:
                         self.legend.AddEntry(self.histos[v + s], s.title, 'l')
 
     def _make_ratios(self):
@@ -515,6 +579,28 @@ class PlotFactory:
                         self.ratiohistos[v + r].Divide(self.sums[v])
                     else:
                         self.ratiohistos[v + r].Divide(self.histos[v.name + denominator])
+
+                    self.ratiohistos[v + r].SetName(self.ratiohistos[v + r].GetName().replace(':', 'VS'))  # TODO: do this?
+
+                elif r.category == 'diff':
+
+                    if not len(r.name.split(':')) == 2:
+                        raise NotImplementedError('cannot interpret ratio')
+
+                    minuend = r.name.split(':')[0]
+                    subtrahend = r.name.split(':')[1]
+
+                    if minuend == 'STACK':
+                        self.ratiohistos[v + r] = self.sums[v].Clone(v + r)
+                    else:
+                        self.ratiohistos[v + r] = self.histos[v.name + minuend].Clone(v + r)
+
+                    if subtrahend == 'STACK':
+                        self.ratiohistos[v + r].Add(self.sums[v], -1)
+                    else:
+                        self.ratiohistos[v + r].Add(self.histos[v.name + subtrahend], -1)
+
+                    self.ratiohistos[v + r].SetName(self.ratiohistos[v + r].GetName().replace(':', 'DIFF'))  # TODO: do this?
 
                 elif r.category in ['cutsig', 'binsig']:
 
@@ -555,11 +641,22 @@ class PlotFactory:
 
                             sig = ROOT.RooStats.AsimovSignificance(S, B, syserrB*B)
 
-                            sigUp = ROOT.RooStats.AsimovSignificance(S+ROOT.TMath.Sqrt(S), B-ROOT.TMath.Sqrt(B), syserrB*(B-ROOT.TMath.Sqrt(B)))
-                            sigDown = ROOT.RooStats.AsimovSignificance(S-ROOT.TMath.Sqrt(S), B+ROOT.TMath.Sqrt(B), syserrB*(B+ROOT.TMath.Sqrt(B)))
+                            sigUp = ROOT.RooStats.AsimovSignificance(S+staterrS.value, B-staterrB.value, syserrB*(B-staterrB.value))
+                            sigDown = ROOT.RooStats.AsimovSignificance(S-staterrS.value, B+staterrB.value, syserrB*(B+staterrB.value))
 
-                            self.ratiohistos[v + r].SetBinContent(b, sig)
-                            self.ratiohistos[v + r].SetBinError(b, 0.5*(sigUp-sigDown))
+                            if not (math.isnan(sig) or math.isnan(sigUp) or math.isnan(sigDown)):
+                                self.ratiohistos[v + r].SetBinContent(b, sig)
+                                self.ratiohistos[v + r].SetBinError(b, 0.5*(sigUp-sigDown))
+
+                            # print('')
+                            # print(self.ratiohistos[v + r].GetBinLowEdge(b))
+                            # print(S)
+                            # print(staterrS)
+                            # print(B)
+                            # print(staterrB)
+                            # print(sig)
+                            # print(sigUp)
+                            # print(sigDown)
 
                 elif r.category == 'calibration':
 
@@ -586,6 +683,7 @@ class PlotFactory:
 
                     else:
 
+                        # TODO: do this scaling??
                         signalhisto.Scale(1. / signalhisto.Integral())
                         backgroundhisto.Scale(1. / backgroundhisto.Integral())
 
@@ -739,8 +837,9 @@ class PlotFactory:
 
                 if isfirstratiohisto:
 
-                    self.ratiohistos[v + r].SetMinimum(self.yaxisrangeratio[0])
-                    self.ratiohistos[v + r].SetMaximum(self.yaxisrangeratio[1])
+                    if self.yaxisrangeratio is not None:
+                        self.ratiohistos[v + r].SetMinimum(self.yaxisrangeratio[0])
+                        self.ratiohistos[v + r].SetMaximum(self.yaxisrangeratio[1])
 
                     isfirstratiohisto = False
 
@@ -757,6 +856,9 @@ class PlotFactory:
             if self.uoflowbins:
                 xlow = self.emptylinhistos[v].GetXaxis().GetBinLowEdge(0)
                 xhigh = self.emptylinhistos[v].GetXaxis().GetBinUpEdge(self.emptylinhistos[v].GetNbinsX() + 1)
+            if type(v.rebin) == list:
+                xlow = v.rebin[0]
+                xhigh = v.rebin[-1]
 
             lines = []
             for ratiohline in self.ratiohlines:
@@ -925,11 +1027,11 @@ class PlotFactory:
             canvas.Draw()
             if type(self.outputformat) == list:
                 for outputfmt in self.outputformat:
-                    canvas.Print(self.outputpath
+                    canvas.Print(self.outputpath + self.outputsubfolder
                                  + '/' + self.outputpattern.replace('VARIABLE', v.name)
                                  + '.' + outputfmt)
             else:
-                canvas.Print(self.outputpath
+                canvas.Print(self.outputpath + self.outputsubfolder
                              + '/' + self.outputpattern.replace('VARIABLE', v.name)
                              + '.' + self.outputformat)
 
@@ -941,10 +1043,10 @@ class PlotFactory:
             self.stacks[v].Draw('hist same noclear')
 
         for s in self.linesamples:
-            self.histos[v + s].Draw('hist same')
+            if s.group is None: self.histos[v + s].Draw('hist same')
 
         for s in self.markersamples:
-            self.histos[v + s].Draw('e x0 same')
+            if s.group is None: self.histos[v + s].Draw('e x0 same')
 
         self.legend.Draw('same')
 
@@ -960,9 +1062,9 @@ class PlotFactory:
             print('\n# Save Histos')
 
             if len(self.stacksamples + self.markersamples + self.linesamples) == 1:
-                fout = ROOT.TFile(self.outputpath + '/histos_' + str((self.stacksamples + self.markersamples + self.linesamples)[0]) + '.root', 'recreate')
+                fout = ROOT.TFile(self.outputpath + self.outputsubfolder + '/histos_' + str((self.stacksamples + self.markersamples + self.linesamples)[0]) + '.root', 'recreate')
             else:
-                fout = ROOT.TFile(self.outputpath + '/histos.root', 'recreate')
+                fout = ROOT.TFile(self.outputpath + self.outputsubfolder + '/histos.root', 'recreate')
             dirout = {}
 
             for r in self.ratios:
@@ -1011,6 +1113,7 @@ class Sample:
     def __init__(self, category, name,
 
                  title=None,
+                 group=None,
 
                  color=ROOT.kBlack,
                  linestyle=ROOT.kSolid,
@@ -1028,6 +1131,8 @@ class Sample:
             self.title = name
         else:
             self.title = title
+
+        self.group = group
 
         self.color = color
         self.linestyle = linestyle
@@ -1047,8 +1152,10 @@ class HistoSample(Sample):
     def __init__(self, category, name,
 
                  title=None,
+                 group=None,
 
                  inputfileindex=0,
+                 inputpattern=None,
                  histofile=None,
 
                  color=ROOT.kBlack,
@@ -1058,9 +1165,10 @@ class HistoSample(Sample):
                  scaleby=1.,
                  scaleto=None):
 
-        Sample.__init__(self, category, name, title, color, linestyle, fillstyle, scaleby, scaleto)
+        Sample.__init__(self, category, name, title, group, color, linestyle, fillstyle, scaleby, scaleto)
 
         self.inputfileindex = inputfileindex
+        self.inputpattern = inputpattern
         if histofile is None:
             self.file = None
         else:
@@ -1071,6 +1179,7 @@ class TreeSample(Sample):
     def __init__(self, category, name, tree, files,
 
                  title=None,
+                 group=None,
 
                  eventselection=None,
                  vectorselection=None,
@@ -1096,7 +1205,7 @@ class TreeSample(Sample):
 
         print('Initializing ' + name)
 
-        Sample.__init__(self, category, name, title, color, linestyle, fillstyle, scaleby, scaleto)
+        Sample.__init__(self, category, name, title, group, color, linestyle, fillstyle, scaleby, scaleto)
 
         self.modifyvarname = modifyvarname
         self.usehistocache = usehistocache
@@ -1308,7 +1417,8 @@ class Variable:
                  nbins=100,
                  yminlin=None, ymaxlin=None, yminlog=None, ymaxlog=None,
                  savehistos=False,
-                 samplestosave='ALL'):
+                 samplestosave='ALL',
+                 inputfileindex=None):
 
         self.name = name
         if title is None:
@@ -1343,6 +1453,8 @@ class Variable:
         self.savehistos = savehistos
         self.samplestosave = samplestosave
 
+        self.inputfileindex = inputfileindex
+
     def __str__(self):
         return self.name
 
@@ -1365,7 +1477,7 @@ class Ratio:
         if variablestosave is None:
             variablestosave = []
 
-        if category not in ['ratio', 'cutsig', 'binsig', 'calibration', 'efficiency']:
+        if category not in ['ratio', 'diff', 'cutsig', 'binsig', 'calibration', 'efficiency']:
             raise NotImplementedError('unknown ratio category')
         self.category = category
 

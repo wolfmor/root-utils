@@ -7,7 +7,7 @@ gROOT.SetBatch()        # don't pop up canvases
 
 class Plotstyle:
     
-    def __init__(self, text="13 TeV", extratext="Preliminary", H_ref=600, W_ref=800, iPos=11):
+    def __init__(self, text="13 TeV", extratext="Preliminary", cmstext="CMS", H_ref=600, W_ref=800, iPos=11):
 
 #        self.text = "13 TeV"
 #        self.extratext = "Preliminary"
@@ -16,6 +16,7 @@ class Plotstyle:
         
         self.text = text
         self.extratext = extratext
+        self.cmstext = cmstext
         self.H_ref = H_ref
         self.W_ref = W_ref
             
@@ -46,6 +47,7 @@ class Plotstyle:
         CMS_lumi.lumi_8TeV = "18.3 fb^{-1}"
         CMS_lumi.writeExtraText = 1
         CMS_lumi.extraText = self.extratext
+        CMS_lumi.cmsText = self.cmstext
         CMS_lumi.lumi_sqrtS = self.text # used with iPeriod = 0, e.g. for simulation-only plots (default is an empty string)
 
         return mystyle
