@@ -7,18 +7,23 @@ source /cvmfs/sft.cern.ch/lcg/app/releases/ROOT/6.24.06/x86_64-centos7-gcc48-opt
 import os
 import sys
 import math
+import time
+import json
 import ctypes
+import random
 import ROOT
 from copy import copy
 from glob import glob
 from array import array
+from collections import OrderedDict
 from plotstyle import Plotstyle
 
 ROOT.gEnv.SetValue('RooFit.Banner', 0)
 
 # enable multi-threading to speed up processing of ROOT.RDataFrame (if supported by ROOT version)
 try:
-    ROOT.EnableImplicitMT()  # doesn't work with ROOT.RDataFrame().Range()
+    # ROOT.EnableImplicitMT()  # doesn't work with ROOT.RDataFrame().Range()
+    ROOT.DisableImplicitMT()  # doesn't work with ROOT.RDataFrame().Range()
 except AttributeError:
     pass
 
@@ -56,6 +61,7 @@ class PlotFactory:
                  ylabel='Events',
                  ylabelratio='Data / Prediction',
                  yaxisrangeratio=(0.0001, 1.9999),
+                 yaxislogratio=False,
                  ratiohlines=None,
                  linewidth=1,
                  markersize=2,
@@ -137,7 +143,7 @@ class PlotFactory:
         self.markersamples = []
         self.linesamples = []
 
-        self.groups = {}
+        self.groups = OrderedDict()  # {}
 
         self.ratios = []
 
@@ -151,12 +157,15 @@ class PlotFactory:
 
         self.outputpath = self.outputpath.replace('ht5/ht', 'ht5overht')
 
-        if outputsubfolder[-1] == '/':
+        if len(outputsubfolder) > 0 and outputsubfolder[-1] == '/':
             outputsubfolder = outputsubfolder[:-1]
-        if outputsubfolder[0] == '/':
+        if len(outputsubfolder) > 0 and outputsubfolder[0] == '/':
             self.outputsubfolder = outputsubfolder
         else:
-            self.outputsubfolder = '/' + outputsubfolder
+            if len(outputsubfolder) > 0:
+                self.outputsubfolder = '/' + outputsubfolder
+            else:
+                self.outputsubfolder = ''
 
         if not os.path.exists(self.outputpath + self.outputsubfolder):
             os.makedirs(self.outputpath + self.outputsubfolder)
@@ -173,6 +182,7 @@ class PlotFactory:
         self.ylabelratio = ylabelratio
 
         self.yaxisrangeratio = yaxisrangeratio
+        self.yaxislogratio = yaxislogratio
         self.ratiohlines = ratiohlines
 
         self.linewidth = linewidth
@@ -199,30 +209,39 @@ class PlotFactory:
         self.emptylinhistos = {}
         self.emptyloghistos = {}
 
-    def process(self):
+    def process(self, dryrun=False, verbose=1):
 
-        if self.width is None:
-            if len(self.ratios) > 0:
-                self.width = int(1. * self.height)
-            else:
-                self.width = int(1.3 * self.height)
+        if dryrun:
 
-        self.p = Plotstyle(text=self.text, extratext=self.extratext, cmstext=self.cmstext, H_ref=self.height, W_ref=self.width, iPos=self.ipos)
-        mystyle = self.p.setStyle()
-        mystyle.cd()
+            print('\nthis is a dry run, these samples are registered:\n')
+            for s in self.stacksamples + self.markersamples + self.linesamples:
+                print(s.name)
 
-        self.legend = ROOT.TLegend(self.poslegend[0], self.poslegend[1], self.poslegend[2], self.poslegend[3])
-        self.legend.SetNColumns(self.ncolumnslegend)
-        self.legend.SetFillStyle(0)
-        self.legend.SetBorderSize(0)
-        if self.boldlegend: self.legend.SetTextFont(62)
-        else: self.legend.SetTextFont(42)
+        else:
 
-        self._get_histos()
-        self._make_ratios()
-        self._style_histos()
-        self._draw_plots()
-        self._save_histos()
+            if self.width is None:
+                if len(self.ratios) > 0:
+                    self.width = int(1. * self.height)
+                else:
+                    self.width = int(1.35 * self.height)  # TODO: make plots w/o ratio also square-like
+
+            self.p = Plotstyle(text=self.text, extratext=self.extratext, cmstext=self.cmstext, H_ref=self.height, W_ref=self.width, iPos=self.ipos)
+            mystyle = self.p.setStyle()
+            mystyle.cd()
+
+            self.legend = ROOT.TLegend(self.poslegend[0], self.poslegend[1], self.poslegend[2], self.poslegend[3])
+            self.legend.SetNColumns(self.ncolumnslegend)
+            self.legend.SetFillStyle(0)
+            self.legend.SetBorderSize(0)
+            if self.boldlegend: self.legend.SetTextFont(62)
+            else: self.legend.SetTextFont(42)
+
+            self._complete_dfs_and_weights()
+            self._get_histos()
+            self._make_ratios(verbose=verbose)
+            self._style_histos(verbose=verbose)
+            self._draw_plots(verbose=verbose)
+            self._save_histos()
 
     def add_variables(self, variablelist):
         """
@@ -240,6 +259,7 @@ class PlotFactory:
             raise AssertionError(str(variable) + ' is a duplicate (names must be unique)')
 
         self.variables.append(variable)
+
 
     def add_samples(self, samplelist):
         for sample in samplelist:
@@ -275,6 +295,12 @@ class PlotFactory:
 
     def add_ratio(self, ratio):
         self.ratios.append(ratio)
+
+    def _complete_dfs_and_weights(self):
+        for s in self.stacksamples + self.markersamples + self.linesamples:
+            if isinstance(s, TreeSample) and s.usedataframeandweightfrom and not s.usehistocache:
+                s.df = {_s.name: _s.df for _s in self.stacksamples + self.markersamples + self.linesamples}[s.usedataframeandweightfrom]
+                s.weight = {_s.name: _s.weight for _s in self.stacksamples + self.markersamples + self.linesamples}[s.usedataframeandweightfrom]
 
     def _get_histos(self):
 
@@ -342,23 +368,31 @@ class PlotFactory:
 
                 if isinstance(s, TreeSample):
 
-                    possiblefiles = [self.outputpath + self.outputsubfolder + '/histos_' + str(s) + '.root'] \
-                                    + glob(self.outputpath + '/era*/histos_' + str(s) + '.root') \
-                                    + glob(self.outputpath + '/era*/histos.root') \
-                                    + glob(self.outputpath + '/part*/histos_' + str(s) + '.root') \
-                                    + glob(self.outputpath + '/part*/histos.root') \
-                                    + glob(self.outputpath + '/era*/part*/histos_' + str(s) + '.root') \
-                                    + glob(self.outputpath + '/era*/part*/histos.root') \
-                                    + glob(self.outputpath + self.outputsubfolder + '_part*/histos_' + str(s) + '.root') \
-                                    + glob(self.outputpath + self.outputsubfolder + '_part*/histos.root') \
-                                    + [self.outputpath + self.outputsubfolder + '/histos.root']
+                    if s.histocachefile is None:
+
+                        possiblefiles = [self.outputpath + self.outputsubfolder + '/histos_' + str(s) + '.root'] \
+                                        + glob(self.outputpath + '/era*/part*/histos_' + str(s) + '.root') \
+                                        + glob(self.outputpath + '/era*/part*/histos.root') \
+                                        + glob(self.outputpath + '/era*/histos_' + str(s) + '.root') \
+                                        + glob(self.outputpath + '/era*/histos.root') \
+                                        + glob(self.outputpath + '/part*/histos_' + str(s) + '.root') \
+                                        + glob(self.outputpath + '/part*/histos.root') \
+                                        + glob(self.outputpath + self.outputsubfolder + '_part*/histos_' + str(s) + '.root') \
+                                        + glob(self.outputpath + self.outputsubfolder + '_part*/histos.root') \
+                                        + [self.outputpath + self.outputsubfolder + '/histos.root']
+
+                    else:
+
+                        possiblefiles = [s.histocachefile]
 
                     for possiblefile in possiblefiles:
                         if os.path.exists(possiblefile):
                             s.file = ROOT.TFile(possiblefile, 'read')
-                            if str(s) in [key.GetName() for key in list(s.file.GetListOfKeys())]:
+                            if s.modifysamplename(str(s)) in [key.GetName() for key in list(s.file.GetListOfKeys())]:
                                 print(' taking histos from ' + possiblefile)
                                 break
+                            else:
+                                s.file = None
 
                 for v in self.variables:
 
@@ -367,7 +401,10 @@ class PlotFactory:
 
                     if s.file is None:
 
-                        if isinstance(s, TreeSample): raise AssertionError('No histo cache file found for TreeSample' + str(s))
+                        if isinstance(s, TreeSample):
+                            print('  possible files:')
+                            print(possiblefiles)
+                            raise AssertionError('No histo cache file found for TreeSample ' + str(s))
 
                         if s.inputpattern is None:
                             self.histos[v + s] = self.inputfiles[s.inputfileindex if v.inputfileindex is None else v.inputfileindex].Get(
@@ -380,15 +417,19 @@ class PlotFactory:
                     else:
                         if isinstance(s, TreeSample) or s.inputpattern is None:
                             self.histos[v + s] = s.file.Get(
-                                (s.name + '/' if isinstance(s, TreeSample) else '') + self.inputpattern.replace('VARIABLE', str(v)).replace('SAMPLE', str(s))
+                                (s.modifysamplename(s.name) + '/' if isinstance(s, TreeSample) else '') + self.inputpattern.replace('VARIABLE', s.modifyvarname(str(v))).replace('SAMPLE', s.modifysamplename(s.name))
                             )
                         else:
                             self.histos[v + s] = s.file.Get(
-                                s.inputpattern.replace('VARIABLE', str(v)).replace('SAMPLE', str(s))
+                                s.inputpattern.replace('VARIABLE', s.modifyvarname(str(v))).replace('SAMPLE', str(s))
                             )
 
-                    self.histos[v + s].GetXaxis().SetRangeUser(v.axisrange[0], v.axisrange[1])
-                    self.histos[v + s].UseCurrentStyle()
+                    try:
+                        self.histos[v + s].GetXaxis().SetRangeUser(v.axisrange[0], v.axisrange[1])
+                        self.histos[v + s].UseCurrentStyle()
+                        self.histos[v + s].SetDirectory(0)
+                    except AttributeError:
+                        raise Exception('no histogram found for variable ' + str(v))
 
 
             for v in self.variables:
@@ -420,6 +461,18 @@ class PlotFactory:
                 self.histos[v + g] = self.histos[v + self.groups[g][0]].Clone(g + v.name)
                 self.histos[v + g].Reset('ICESM')
                 for part in self.groups[g]:
+                    if not part.scaleby == 1.:
+                        if type(part.scaleby) == dict:
+                            if v.name in part.scaleby:
+                                for bintoscale in part.scaleby[v.name]:
+                                    scalethisbinby = part.scaleby[v.name][bintoscale]
+                                    if bintoscale < 0: bintoscale = self.histos[v + part].GetNbinsX() + 1 + bintoscale
+                                    if hasattr(scalethisbinby, '__call__'):
+                                        self.histos[v + part].SetBinContent(bintoscale, scalethisbinby(self.histos[v + part].GetBinLowEdge(bintoscale)) * self.histos[v + part].GetBinContent(bintoscale))
+                                    else:
+                                        self.histos[v + part].SetBinContent(bintoscale, scalethisbinby * self.histos[v + part].GetBinContent(bintoscale))
+                        else:
+                            self.histos[v + part].Scale(part.scaleby)
                     self.histos[v + g].Add(self.histos[v + part])
 
 
@@ -443,6 +496,12 @@ class PlotFactory:
                 # make sure to use existing bin edges
                 existingbins = [self.histos[v + flatsample].GetBinLowEdge(b) for b in range(self.histos[v + flatsample].GetNbinsX() + 2)]
                 roundedquantiles = [min(existingbins, key=lambda x: abs(x - q)) for q in quantiles]
+
+                roundedquantiles = list(OrderedDict.fromkeys(roundedquantiles))  # TODO: remove duplicates?
+                if not flatnbins == len(roundedquantiles) + 1:
+                    print('\nchanging number of flat bins to', len(roundedquantiles) + 1)
+                flatnbins = len(roundedquantiles) + 1
+
                 quantiles = array('d', roundedquantiles)
 
                 quantiles.insert(0, v.axisrange[0])
@@ -486,19 +545,31 @@ class PlotFactory:
                 if self.uoflowbins:
                     self.histos[v + s].GetXaxis().SetRange(0, self.histos[v + s].GetNbinsX() + 1)
 
-                if not s.scaleby == 1.:
-                    self.histos[v + s].Scale(s.scaleby)
+                if s.group is None and s.name not in self.groups and not s.scaleby == 1.:
+                    if type(s.scaleby) == dict:
+                        if v.name in s.scaleby:
+                            for bintoscale in s.scaleby[v.name]:
+                                scalethisbinby = s.scaleby[v.name][bintoscale]
+                                if bintoscale < 0: bintoscale = self.histos[v + s].GetNbinsX() + 1 + bintoscale
+                                if hasattr(scalethisbinby, '__call__'):
+                                    self.histos[v + s].SetBinContent(bintoscale, scalethisbinby(self.histos[v + s].GetBinLowEdge(bintoscale)) * self.histos[v + s].GetBinContent(bintoscale))
+                                else:
+                                    self.histos[v + s].SetBinContent(bintoscale, scalethisbinby * self.histos[v + s].GetBinContent(bintoscale))
+                    else:
+                        self.histos[v + s].Scale(s.scaleby)
 
 
             if len(self.stacksamples) > 0:
                 self.sums[v] = self.histos[v + self.stacksamples[0]].Clone('sum' + v.name)
                 self.sums[v].Reset('ICESM')
                 for s in self.stacksamples:
-                    self.sums[v].Add(self.histos[v + s])
+                    if s.group is None: self.sums[v].Add(self.histos[v + s])
 
             if self.normalize:
                 for s in self.markersamples + self.linesamples:
                     if self.histos[v + s].Integral() > 0:
+                        print('Integral ' + str(s))
+                        print(self.histos[v + s].Integral())
                         self.histos[v + s].Scale(1. / self.histos[v + s].Integral())
                 if len(self.stacksamples) > 0 and self.sums[v].Integral() > 0:
                     for s in self.stacksamples:
@@ -507,6 +578,7 @@ class PlotFactory:
 
             for s in self.markersamples + self.linesamples:
                 if s.scaleto is None: continue
+                if s.group is not None: continue
                 scaletoargs = s.scaleto.split(':')
                 if len(scaletoargs) == 3 and scaletoargs[0] in [str(_s) for _s in self.stacksamples + self.markersamples + self.linesamples] or scaletoargs[0] == 'STACK':
 
@@ -521,7 +593,8 @@ class PlotFactory:
                     else:
                         scaletotarget = self.histos[str(v) + scaletoargs[0]].Integral(scaletostartbin, scaletoendbin)
 
-                    if self.histos[v + s].Integral() > 0:
+                    if self.histos[v + s].Integral(scaletostartbin, scaletoendbin) > 0:
+
                         self.histos[v + s].Scale(scaletotarget / self.histos[v + s].Integral(scaletostartbin, scaletoendbin))
 
 
@@ -552,35 +625,134 @@ class PlotFactory:
                     if len(s.title) > 0 and s.group is None:
                         self.legend.AddEntry(self.histos[v + s], s.title, 'l')
 
-    def _make_ratios(self):
+        if any([s.usehistocache for s in self.stacksamples + self.markersamples + self.linesamples if isinstance(s, TreeSample)]):
+            print('\n5 seconds to check histo cache files')
+            time.sleep(5)
+
+
+    def _make_ratios(self, verbose=1):
 
         print('\n# Make Ratios')
 
         for v in self.variables:
 
-            print(v)
+            if verbose > 1: print(v)
 
+            if len(v.systematics) > 0:
+                self.ratiohistos[v + 'systUp'] = self.sums[v].Clone(v + 'systUp')
+                self.ratiohistos[v + 'systDn'] = self.sums[v].Clone(v + 'systDn')
+
+            for isyst, syst in enumerate(v.systematics):
+
+                for nbin in range(self.sums[v].GetNbinsX()):
+
+                    if type(syst[nbin]) == tuple:
+
+                        errsample = syst[nbin][0]
+                        errvalue = syst[nbin][1]
+
+                        if hasattr(errvalue, '__call__'):
+                            errvalue = abs(1 - errvalue(self.ratiohistos[v + 'systUp'].GetBinLowEdge(nbin+1)))
+
+                        if errsample == 'STACK':
+                            err = errvalue
+                        else:
+                            if self.sums[v].GetBinContent(nbin+1) > 0:
+                                err = errvalue * self.histos[v + errsample].GetBinContent(nbin+1) / self.sums[v].GetBinContent(nbin+1)
+                            else:
+                                err = 0
+
+                    else:
+
+                        err = syst[nbin]
+
+                    if isyst == 0:
+
+                        self.ratiohistos[v + 'systUp'].SetBinError(nbin+1, 0)
+                        self.ratiohistos[v + 'systUp'].SetBinContent(nbin+1, err)
+
+                    else:
+
+                        self.ratiohistos[v + 'systUp'].SetBinContent(
+                            nbin+1,
+                            ROOT.TMath.Sqrt(self.ratiohistos[v + 'systUp'].GetBinContent(nbin+1)**2 + err**2)
+                        )
+
+                    if isyst == len(v.systematics)-1:
+
+                        self.ratiohistos[v + 'systDn'].SetBinContent(nbin+1, 1 - self.ratiohistos[v + 'systUp'].GetBinContent(nbin+1))
+                        self.ratiohistos[v + 'systUp'].SetBinContent(nbin+1, 1 + self.ratiohistos[v + 'systUp'].GetBinContent(nbin+1))
+
+            issecondfit = False
             for r in self.ratios:
 
-                if r.category == 'ratio':
+                if 'ratio' in r.category:
 
                     if not len(r.name.split(':')) == 2:
                         raise NotImplementedError('cannot interpret ratio')
 
                     numerator = r.name.split(':')[0]
-                    denominator = r.name.split(':')[1]
+                    denominator = r.name.split(':')[1].replace('_ALT', '')
 
                     if numerator == 'STACK':
                         self.ratiohistos[v + r] = self.sums[v].Clone(v + r)
+                    elif 'DIFF' in numerator:
+                        self.ratiohistos[v + r] = self.ratiohistos[v.name + 'diff' + numerator.replace('DIFF', ':')].Clone(v + r)
                     else:
                         self.ratiohistos[v + r] = self.histos[v.name + numerator].Clone(v + r)
 
                     if denominator == 'STACK':
                         self.ratiohistos[v + r].Divide(self.sums[v])
+                    elif 'DIFF' in denominator:
+                        self.ratiohistos[v + r].Divide(self.ratiohistos[v.name + 'diff' + denominator.replace('DIFF', ':')])
                     else:
                         self.ratiohistos[v + r].Divide(self.histos[v.name + denominator])
 
                     self.ratiohistos[v + r].SetName(self.ratiohistos[v + r].GetName().replace(':', 'VS'))  # TODO: do this?
+
+                    if v.verboseratio:
+                        print(' ' + r.name)
+                        print(' ' + v.name)
+                        for nbin in range(self.ratiohistos[v + r].GetNbinsX()):
+                            print(str(nbin+1) + ' (' + str(self.ratiohistos[v + r].GetBinLowEdge(nbin+1)) + ')')
+                            print(self.ratiohistos[v + r].GetBinContent(nbin+1))
+                            print(self.ratiohistos[v + r].GetBinError(nbin+1))
+
+                    if r.category == 'ratiowithfit' and v.name in r.ratiofitvariables:
+
+                        ROOT.gStyle.SetOptFit(0)
+
+                        self.ratiohistos[v + r + 'func'] = ROOT.TF1('func' + v.name + r.name, '[0] + [1] * x')
+
+                        fitresult = self.ratiohistos[v + r].Fit(
+                            self.ratiohistos[v + r + 'func'],  # 'pol1',
+                            'S+',
+                            '',
+                            float(str(r.ratiofitlimits[0]).replace('START', str(v.axisrange[0]))),
+                            float(str(r.ratiofitlimits[1]).replace('END', str(v.axisrange[1]))),
+                        )
+
+                        slope = fitresult.Parameter(1)
+                        slope_error = fitresult.ParError(1)
+
+                        intercept = fitresult.Parameter(0)
+                        intercept_error = fitresult.ParError(0)
+
+                        if issecondfit:
+                            self.ratiohistos[v + r].GetListOfFunctions().FindObject('func' + v.name + r.name).SetLineColor(4)
+                            self.ratiohistos[v + r + 'label'] = ROOT.TPaveLabel(v.axisrange[0] + 0.05 * (v.axisrange[1] - v.axisrange[0]), self.yaxisrangeratio[0],
+                                                                                v.axisrange[0] + 0.333 * (v.axisrange[1] - v.axisrange[0]), self.yaxisrangeratio[0] + 0.5 * (self.yaxisrangeratio[1] - self.yaxisrangeratio[0]),
+                                                                                '#color[4]{#splitline{slope = ' + str(round(slope, 6)) + ' #pm ' + str(round(slope_error, 6)) + '}{intercept = ' + str(round(intercept, 6)) + ' #pm ' + str(round(intercept_error, 6)) + '}}')
+
+                        else:
+                            self.ratiohistos[v + r + 'label'] = ROOT.TPaveLabel(v.axisrange[0] + 0.05 * (v.axisrange[1] - v.axisrange[0]), self.yaxisrangeratio[0] + 0.5 * (self.yaxisrangeratio[1] - self.yaxisrangeratio[0]),
+                                                                                v.axisrange[0] + 0.333 * (v.axisrange[1] - v.axisrange[0]), self.yaxisrangeratio[1],
+                                                                                '#color[2]{#splitline{slope = ' + str(round(slope, 6)) + ' #pm ' + str(round(slope_error, 6)) + '}{intercept = ' + str(round(intercept, 6)) + ' #pm ' + str(round(intercept_error, 6)) + '}}')
+                        self.ratiohistos[v + r + 'label'].SetFillStyle(0)
+                        self.ratiohistos[v + r + 'label'].SetBorderSize(0)
+                        self.ratiohistos[v + r + 'label'].SetTextSize(0.2)
+
+                        issecondfit = True
 
                 elif r.category == 'diff':
 
@@ -616,6 +788,11 @@ class PlotFactory:
                         self.ratiohistos[v + r].Reset()
                         break
 
+                    maxsig = 0.
+                    maxsigerr = None
+                    maxsigbin = None
+                    maxsigS = None
+                    maxsigB = None
                     nbins = self.ratiohistos[v + r].GetNbinsX()
                     for b in range(nbins):
 
@@ -648,6 +825,13 @@ class PlotFactory:
                                 self.ratiohistos[v + r].SetBinContent(b, sig)
                                 self.ratiohistos[v + r].SetBinError(b, 0.5*(sigUp-sigDown))
 
+                                if sigDown > maxsig:
+                                    maxsig = sig
+                                    maxsigerr = 0.5*(sigUp-sigDown)
+                                    maxsigbin = b
+                                    maxsigS = S
+                                    maxsigB = B
+
                             # print('')
                             # print(self.ratiohistos[v + r].GetBinLowEdge(b))
                             # print(S)
@@ -657,6 +841,16 @@ class PlotFactory:
                             # print(sig)
                             # print(sigUp)
                             # print(sigDown)
+
+                    if v.verbosesignificance:
+                        print(' ' + r.name)
+                        if maxsig > 0:
+                            print('  max significance for bin ' + str(maxsigbin)
+                                  + ' (low edge: ' + str(self.ratiohistos[v + r].GetBinLowEdge(maxsigbin)) + ')'
+                                  + ' = ' + str(round(maxsig, 3)) + ' +- ' + str(round(maxsigerr, 3)))
+                            print('  S = ' + str(round(maxsigS, 2)) + ' (' + str(round(100 * maxsigS / self.histos[v.name + signal].Integral(), 1)) + '%), B = ' + str(round(maxsigB, 2)))
+                        else:
+                            print('  no significance > 0')
 
                 elif r.category == 'calibration':
 
@@ -724,13 +918,13 @@ class PlotFactory:
                 else:
                     raise NotImplementedError('unknown ratio type')
 
-    def _style_histos(self):
+    def _style_histos(self, verbose=1):
 
         print('\n# Style Histos')
 
         for v in self.variables:
 
-            print(v)
+            if verbose > 1: print(v)
 
             for s in self.stacksamples + self.markersamples + self.linesamples:
                 self.emptylinhistos[v] = self.histos[v + s].Clone('emptylin' + v.name)
@@ -746,10 +940,10 @@ class PlotFactory:
                     emptyhisto.GetXaxis().SetTitle(v.title)
 
             globalmin = min([self.sums[v].GetMinimum(0) if len(self.stacksamples) > 0 else float('inf')] +
-                            [self.histos[v + s].GetMinimum(0) for s in self.markersamples + self.linesamples])
+                            [self.histos[v + s].GetMinimum(0) for s in self.markersamples + self.linesamples if s.group is None])
 
             globalmax = max([self.sums[v].GetMaximum() if len(self.stacksamples) > 0 else 0] +
-                            [self.histos[v + s].GetMaximum() for s in self.markersamples + self.linesamples])
+                            [self.histos[v + s].GetMaximum() for s in self.markersamples + self.linesamples if s.group is None])
 
             if v.ymaxlog is None: logmax = globalmax
             else: logmax = v.ymaxlog
@@ -801,28 +995,64 @@ class PlotFactory:
                 self.histos[v + s].SetMarkerSize(0)
 
             isfirstratiohisto = True
+
+            if len(v.systematics) > 0:
+
+                self.ratiohistos[v + 'systUp'].SetLineColor(ROOT.kWhite)
+                self.ratiohistos[v + 'systUp'].SetLineWidth(0)
+                self.ratiohistos[v + 'systUp'].SetFillStyle(3002)
+                self.ratiohistos[v + 'systUp'].SetFillColor(ROOT.kGray+1)
+
+                self.ratiohistos[v + 'systDn'].SetLineColor(ROOT.kWhite)
+                self.ratiohistos[v + 'systDn'].SetLineWidth(0)
+                self.ratiohistos[v + 'systDn'].SetFillColor(10)
+
+                if self.yaxisrangeratio is not None:
+                    self.ratiohistos[v + 'systUp'].SetMinimum(self.yaxisrangeratio[0])
+                    self.ratiohistos[v + 'systUp'].SetMaximum(self.yaxisrangeratio[1])
+
+                if self.ratios[0].xaxlabeloffset is not None:
+                    self.ratiohistos[v + 'systUp'].GetXaxis().SetLabelOffset(self.ratios[0].xaxlabeloffset)
+
+                self.ratiohistos[v + 'systUp'].GetXaxis().SetTitle(v.title)
+                self.ratiohistos[v + 'systUp'].GetYaxis().SetTitle(self.ylabelratio)
+
+                isfirstratiohisto = False
+
             for r in self.ratios:
 
+                if r.hidden: continue
+
                 if self.ratiohistos[v + r] is None: continue
+
+                if r.takestylefrom is None:
+                    takestylefrom = r.name.split(':')[0]
+                    if takestylefrom == 'STACK':
+                        takestylefrom = r.name.split(':')[1]
+                else:
+                    takestylefrom = r.takestylefrom
 
                 self.ratiohistos[v + r].GetXaxis().SetTitle(v.title)
                 self.ratiohistos[v + r].GetYaxis().SetTitle(self.ylabelratio)
 
-                self.ratiohistos[v + r].SetLineWidth(self.linewidth)
-                self.ratiohistos[v + r].SetLineStyle(self.histos[v.name + r.name.split(':')[0]].GetLineStyle())
-                self.ratiohistos[v + r].SetLineColor(self.histos[v.name + r.name.split(':')[0]].GetLineColor())
+                if r.xaxlabeloffset is not None:
+                    self.ratiohistos[v + r].GetXaxis().SetLabelOffset(r.xaxlabeloffset)
 
-                self.ratiohistos[v + r].SetMarkerSize(self.histos[v.name + r.name.split(':')[0]].GetMarkerSize())
-                self.ratiohistos[v + r].SetMarkerColor(self.histos[v.name + r.name.split(':')[0]].GetMarkerColor())
+                self.ratiohistos[v + r].SetLineWidth(self.linewidth)
+                self.ratiohistos[v + r].SetLineStyle(self.histos[v.name + takestylefrom].GetLineStyle())
+                self.ratiohistos[v + r].SetLineColor(self.histos[v.name + takestylefrom].GetLineColor())
+
+                self.ratiohistos[v + r].SetMarkerSize(self.histos[v.name + takestylefrom].GetMarkerSize())
+                self.ratiohistos[v + r].SetMarkerColor(self.histos[v.name + takestylefrom].GetMarkerColor())
 
                 if r.category == 'efficiency':
 
                     self.ratiohistos[str(v + r) + 'eff'].SetLineWidth(self.linewidth)
-                    self.ratiohistos[str(v + r) + 'eff'].SetLineStyle(self.histos[v.name + r.name.split(':')[0]].GetLineStyle())
-                    self.ratiohistos[str(v + r) + 'eff'].SetLineColor(self.histos[v.name + r.name.split(':')[0]].GetLineColor())
+                    self.ratiohistos[str(v + r) + 'eff'].SetLineStyle(self.histos[v.name + takestylefrom].GetLineStyle())
+                    self.ratiohistos[str(v + r) + 'eff'].SetLineColor(self.histos[v.name + takestylefrom].GetLineColor())
 
-                    self.ratiohistos[str(v + r) + 'eff'].SetMarkerSize(self.histos[v.name + r.name.split(':')[0]].GetMarkerSize())
-                    self.ratiohistos[str(v + r) + 'eff'].SetMarkerColor(self.histos[v.name + r.name.split(':')[0]].GetMarkerColor())
+                    self.ratiohistos[str(v + r) + 'eff'].SetMarkerSize(self.histos[v.name + takestylefrom].GetMarkerSize())
+                    self.ratiohistos[str(v + r) + 'eff'].SetMarkerColor(self.histos[v.name + takestylefrom].GetMarkerColor())
 
                 if r.drawoptions is not None:
 
@@ -830,9 +1060,9 @@ class PlotFactory:
 
                         if ':=' in drawopt:
                             self.ratiohistos[v + r + drawopt] = self.ratiohistos[v + r].Clone(v + r + drawopt)
-                            self.ratiohistos[v + r + drawopt].SetFillStyle(int(drawopt.split(':=')[1]))
-                            self.ratiohistos[v + r + drawopt].SetFillColor({s.name: s for s in self.stacksamples + self.markersamples + self.linesamples}[r.name.split(':')[0]].color)
-
+                            if len(drawopt.split(':=')[1]) > 0:
+                                self.ratiohistos[v + r + drawopt].SetFillStyle(int(drawopt.split(':=')[1]))
+                                self.ratiohistos[v + r + drawopt].SetFillColor({s.name: s for s in self.stacksamples + self.markersamples + self.linesamples}[takestylefrom].color)
 
 
                 if isfirstratiohisto:
@@ -843,13 +1073,13 @@ class PlotFactory:
 
                     isfirstratiohisto = False
 
-    def _draw_plots(self):
+    def _draw_plots(self, verbose=1):
 
         print('\n# Draw Plots')
 
         for v in self.variables:
 
-            print(v)
+            if verbose > 1: print(v)
 
             xlow = v.axisrange[0]
             xhigh = v.axisrange[1]
@@ -900,7 +1130,12 @@ class PlotFactory:
 
                     subpads['1_2'].cd()
 
+                    if self.yaxislogratio:
+                        ROOT.gPad.SetLogy()
+
                     for r in self.ratios:
+
+                        if r.hidden: continue
 
                         if self.ratiohistos[v + r] is None: continue
 
@@ -927,6 +1162,9 @@ class PlotFactory:
                                 self.ratiohistos[v + r].Draw('hist same')
                                 if r.category == 'efficiency':
                                     self.ratiohistos[str(v + r) + 'eff'].Draw('same')
+
+                        if r.category == 'ratiowithfit' and v.name in r.ratiofitvariables:
+                            self.ratiohistos[v + r + 'label'].Draw('same')
 
                         self.p.adjustLowerHisto(self.ratiohistos[v + r])
 
@@ -969,8 +1207,21 @@ class PlotFactory:
 
                         subpads[lowerpad].cd()
 
+                        if self.yaxislogratio:
+                            ROOT.gPad.SetLogy()
+
+                        if len(v.systematics) > 0:
+
+                            self.ratiohistos[v + 'systUp'].Draw('hist same')
+                            self.ratiohistos[v + 'systDn'].Draw('hist same')
+
+                            self.p.adjustLowerHisto(self.ratiohistos[v + 'systUp'])
+                            self.p.adjustLowerHisto(self.ratiohistos[v + 'systDn'])
+
                         # TODO: draw small arrows if ratio out of range
                         for r in self.ratios:
+
+                            if r.hidden: continue
 
                             if self.ratiohistos[v + r] is None: continue
 
@@ -985,8 +1236,13 @@ class PlotFactory:
 
                             else:
 
+                                # for i in range(self.ratiohistos[v + r].GetNbinsX()):
+                                #     print(self.ratiohistos[v + r].GetBinContent(i))
+                                #     print(self.ratiohistos[v + r].GetBinError(i))
+                                #     print()
+
                                 if r.name.split(':')[0] in [s.name for s in self.markersamples]:
-                                    self.ratiohistos[v + r].Draw('e x0 same')
+                                    self.ratiohistos[v + r].Draw('e0 x same')  # e0 x same  e x0 same
                                     if r.category == 'efficiency':
                                         self.ratiohistos[str(v + r) + 'eff'].Draw('same')
                                 # TODO: errors on ratio histos?
@@ -998,7 +1254,14 @@ class PlotFactory:
                                     if r.category == 'efficiency':
                                         self.ratiohistos[str(v + r) + 'eff'].Draw('same')
 
+                            if r.category == 'ratiowithfit' and v.name in r.ratiofitvariables:
+                                self.ratiohistos[v + r + 'label'].Draw('same')
+
                             self.p.adjustLowerHisto(self.ratiohistos[v + r])
+
+
+                        if len(v.systematics) > 0:
+                            self.ratiohistos[v + 'systUp'].Draw('axis same')
 
                         for line in lines:
                             line.Draw('same')
@@ -1075,9 +1338,11 @@ class PlotFactory:
 
             for v in self.variables:
                 if v.savehistos:
-                    if v.samplestosave == 'ALL':
+                    if v.samplestosave == 'ALL' or v.samplestosave == 'GROUPS':
 
                         for s in self.stacksamples + self.markersamples + self.linesamples:
+
+                            if v.samplestosave == 'GROUPS' and s.group is not None: continue
 
                             if s.name not in dirout:
                                 dirout[s.name] = fout.mkdir(s.name)
@@ -1180,6 +1445,7 @@ class TreeSample(Sample):
 
                  title=None,
                  group=None,
+                 modifysamplename=lambda samplename: samplename,
 
                  eventselection=None,
                  vectorselection=None,
@@ -1200,40 +1466,117 @@ class TreeSample(Sample):
                  friendtree='tFriend',
                  friendfileslambda=None,
 
-                 usehistocache=False
+                 usehistocache=False,
+                 histocachefile=None,
+                 usedataframeandweightfrom=False,
                  ):
 
         print('Initializing ' + name)
 
         Sample.__init__(self, category, name, title, group, color, linestyle, fillstyle, scaleby, scaleto)
 
+        self.modifysamplename = modifysamplename
         self.modifyvarname = modifyvarname
         self.usehistocache = usehistocache
+        self.histocachefile = histocachefile
+        self.usedataframeandweightfrom = usedataframeandweightfrom
 
         if self.usehistocache:
 
-            print(' using histo cache, weights and selections will have no effect')
+            print(' using histo cache, weights and selections will have no effect\n')
+
+        elif self.usedataframeandweightfrom:
+
+            self.df = None
+            self.weight = None
+
+            if vectorselection is None or vectorselection == '' or vectorselection == '1':
+                self.vectorselection = None
+            else:
+                self.vectorselection = vectorselection
+
+            print(' using dataframe and weight from sample: ' + self.usedataframeandweightfrom + '\n')
 
         else:
 
             filelist = []
             if type(files) == list:
                 for f in files:
-                    filelist += glob(f)
+                    if '*' in f: filelist += glob(f)
+                    else: filelist.append(f)
             else:
-                filelist += glob(files)
+                if '*' in files: filelist += glob(files)
+                else: filelist.append(files)
 
             if ntestfiles:
-                filelist = filelist[:ntestfiles]
+                # filelist = filelist[:ntestfiles]
+                filelist = random.choices(filelist, k=ntestfiles)
 
             skipfiles_empty = []
             if skipemptyfiles:
-                for f in filelist:
-                    testfile = ROOT.TFile(f)
-                    testtree = testfile.Get(tree)
-                    if not testtree.GetEntries() > 0:
-                        skipfiles_empty.append(f)
-                    testfile.Close()
+
+                print(' check empty files')
+
+                if type(skipemptyfiles) == list:
+
+                    baselineskipfile = skipemptyfiles[0]
+                    selectionskipfile = '/'.join(baselineskipfile.split('/')[:7] + [skipemptyfiles[1]] + baselineskipfile.split('/')[7:])
+                    if os.path.exists(selectionskipfile):
+                        print(selectionskipfile)
+                        with open(selectionskipfile, 'r') as infile:
+                            skipfiles_empty = infile.read().split('\n')
+
+                    elif os.path.exists(baselineskipfile):
+                        print(baselineskipfile)
+                        with open(baselineskipfile, 'r') as infile:
+                            skipfiles_empty = infile.read().split('\n')
+
+                    else:
+
+                        for f in filelist:
+                            testfile = ROOT.TFile(f)
+                            testtree = testfile.Get(tree)
+                            if not testtree.GetEntry(0):
+                                skipfiles_empty.append(f)
+                            testfile.Close()
+
+                        if not os.path.exists(os.path.dirname(baselineskipfile)):
+                            os.makedirs(os.path.dirname(baselineskipfile))
+
+                        with open(baselineskipfile, 'w+') as outfile:
+                            outfile.write('\n'.join(skipfiles_empty))
+
+                elif type(skipemptyfiles) == str:
+
+                    if os.path.exists(skipemptyfiles):
+
+                        with open(skipemptyfiles, 'r') as infile:
+                            skipfiles_empty = infile.read().split('\n')
+
+                    else:
+
+                        for f in filelist:
+                            testfile = ROOT.TFile(f)
+                            testtree = testfile.Get(tree)
+                            if not testtree.GetEntry(0):
+                                skipfiles_empty.append(f)
+                            testfile.Close()
+
+                        if not os.path.exists(os.path.dirname(skipemptyfiles)):
+                            os.makedirs(os.path.dirname(skipemptyfiles))
+
+                        with open(skipemptyfiles, 'w+') as outfile:
+                            outfile.write('\n'.join(skipfiles_empty))
+
+                else:
+
+                    for f in filelist:
+                        testfile = ROOT.TFile(f)
+                        testtree = testfile.Get(tree)
+                        if not testtree.GetEntry(0):
+                            skipfiles_empty.append(f)
+                        testfile.Close()
+
 
                 print(' skipping ' + str(len(skipfiles_empty)) + ' of ' + str(len(filelist)) + ' files because they are empty')
 
@@ -1243,12 +1586,14 @@ class TreeSample(Sample):
 
             if friendfileslambda is None:
 
-                if eventselection is None or eventselection == '' or eventselection == '1':
-                    self.df = ROOT.RDataFrame(tree, [f for f in filelist if f not in skipfiles_empty])
-                else:
-                    self.df = ROOT.RDataFrame(tree, [f for f in filelist if f not in skipfiles_empty]).Filter(eventselection, ' selection for ' + self.name)
+                self.chain = ROOT.TChain(tree)
+                for f in filelist:
+                    if skipemptyfiles and f in skipfiles_empty: continue
+                    self.chain.Add(f)
 
             else:
+
+                print(' process friend files')
 
                 friendfilelist = []
                 skipfiles_nofriend = []
@@ -1257,8 +1602,11 @@ class TreeSample(Sample):
                     if os.path.exists(friendfileslambda(f)):
                         friendfilelist.append(friendfileslambda(f))
                     else:
+                        print(friendfileslambda(f))
                         print(' skipping file because it has no friend:\n' + f)
                         skipfiles_nofriend.append(f)
+
+                print(' skipping ' + str(len(skipfiles_nofriend)) + ' of ' + str(len(filelist)) + ' files because they have no friends')
 
                 # here it's ok to remove the files
                 for f in skipfiles_nofriend:
@@ -1275,11 +1623,12 @@ class TreeSample(Sample):
 
                 self.chain.AddFriend(self.friendchain)
 
-                if eventselection is None or eventselection == '' or eventselection == '1':
-                    self.df = ROOT.RDataFrame(self.chain)
-                else:
-                    self.df = ROOT.RDataFrame(self.chain).Filter(eventselection, ' selection for ' + self.name)
+            print(' construct dataframe')
 
+            if eventselection is None or eventselection == '' or eventselection == '1':
+                self.df = ROOT.RDataFrame(self.chain)
+            else:
+                self.df = ROOT.RDataFrame(self.chain).Filter(eventselection, ' selection for ' + self.name)
 
             if vectorselection is None or vectorselection == '' or vectorselection == '1':
                 self.vectorselection = None
@@ -1294,7 +1643,7 @@ class TreeSample(Sample):
                 weighttosplit = ''
                 oktoreplace = True
                 for ichar, character in enumerate(weight):
-                    if character in ['/', '*', '(', ')'] and oktoreplace:
+                    if character in ['/', '*'] and oktoreplace:  # , '(', ')'  # TODO: this is really hacky
                         weighttosplit += 'SPLITHERE'
                     else:
                         weighttosplit += character
@@ -1307,12 +1656,21 @@ class TreeSample(Sample):
 
                 weights = weighttosplit.split('SPLITHERE')
 
+                print(weights)
+
                 for w in weights:
                     if w in self.df.GetColumnNames() or w in ['XSEC', 'NSIM', 'COUNTER', ''] or w.replace('.', '', 1).isdigit(): continue
                     wargs = w.split(':=[')
                     if len(wargs) == 2:
-                        self.df = self.df.Define(wargs[0], wargs[1].replace(']', ''))
+                        self.df = self.df.Define(wargs[0].replace('TRACKLEVEL', ''), wargs[1].replace(';]', ''))
+                        weight = weight\
+                            .replace(wargs[0], wargs[0].replace('TRACKLEVEL', ''))\
+                            .replace(':=[' + wargs[1], '[' + self.vectorselection + ']' if wargs[0].endswith('TRACKLEVEL') else '')
+                    elif len(wargs) == 3:
+                        self.df = self.df.Define(wargs[1].split('=')[0], wargs[1].split('=')[1])
+                        self.df = self.df.Define(wargs[0], wargs[2].replace(';]', ''))
                         weight = weight.replace(':=[' + wargs[1], '')
+                        weight = weight.replace(':=[' + wargs[2], '')
                     else:
                         raise NotImplementedError('cannot interpret weight: ', w)
 
@@ -1322,15 +1680,13 @@ class TreeSample(Sample):
                     self.smallchain = ROOT.TChain(tree)
                     for f in filelist:
                         thefile = ROOT.TFile(f, 'read')
-                        if thefile.Get(tree).GetEntries() > 0:
+                        if thefile.Get(tree).GetEntry(0):
                             self.smallchain.Add(f, 1)
                             thefile.Close()
                             break
                         thefile.Close()
 
-                    if self.smallchain.GetEntries() > 0:
-
-                        self.smallchain.GetEntry(0)
+                    if self.smallchain.GetEntry(0):
 
                         if 'XSEC' in weight:
                             print(' get XSEC')
@@ -1366,14 +1722,13 @@ class TreeSample(Sample):
                     self.smallchain = ROOT.TChain(tree)
                     for f in filelist:
                         thefile = ROOT.TFile(f, 'read')
-                        if thefile.Get(tree).GetEntries() > 0:
+                        if thefile.Get(tree).GetEntry(0):
                             self.smallchain.Add(f, 1)
                             thefile.Close()
                             break
                         thefile.Close()
 
-                    if self.smallchain.GetEntries() > 0:
-                        self.smallchain.GetEntry(0)
+                    if self.smallchain.GetEntry(0):
                         self.NSIM = self.smallchain.numSimEvents
 
                 if self.COUNTER is None:
@@ -1382,29 +1737,8 @@ class TreeSample(Sample):
                     self.COUNTER = self.counter.Count().GetValue()
 
                 print('  COUNTER: ' + str(int(self.COUNTER)))
-                print('  NSIM: ' + str(int(self.NSIM)))
-                print('  ' + str(round(self.COUNTER / self.NSIM, 3) * 100) + '% of events in ' + str(len(filelist)) + ' files\n')
-
-
-        # TODO: implement usage of TreeSamples without RDataFrame with:
-        # deactivation of unused branches via setbranchstatus
-        # entrylist used correctly?
-        #
-        # self.tree = tree
-        # self.files = files
-        #
-        # self.selection = selection
-        # print('# Prepare Sample ' + self.name)
-        #
-        # self.chain = ROOT.TChain()
-        # for t in self.trees:
-        #     for f in self.files:
-        #         self.chain.Add(f + '/' + t)
-        #
-        # self.chain.Draw('>>entrylist' + self.name, selection, 'entrylist')
-        # self.entrylist = ROOT.gDirectory.Get('entrylist' + self.name)
-        #
-        # self.chain.SetEntryList(self.entrylist)
+                print('  NSIM:    ' + str(int(self.NSIM)))
+                print('  ' + str(self.COUNTER / self.NSIM * 100)[:5] + '% of events in ' + str(len(filelist)) + ' files\n')
 
 
 class Variable:
@@ -1418,7 +1752,10 @@ class Variable:
                  yminlin=None, ymaxlin=None, yminlog=None, ymaxlog=None,
                  savehistos=False,
                  samplestosave='ALL',
-                 inputfileindex=None):
+                 inputfileindex=None,
+                 systematics=None,
+                 verboseratio=False,
+                 verbosesignificance=False):
 
         self.name = name
         if title is None:
@@ -1455,6 +1792,14 @@ class Variable:
 
         self.inputfileindex = inputfileindex
 
+        if systematics is None:
+            self.systematics = []
+        else:
+            self.systematics = systematics
+
+        self.verboseratio = verboseratio
+        self.verbosesignificance = verbosesignificance
+
     def __str__(self):
         return self.name
 
@@ -1462,22 +1807,34 @@ class Variable:
         return str(self) + str(other)
 
     @classmethod
-    def fromlist(cls, lst, savehistos=False):
-        if len(lst) == 5:
-            return cls(name=lst[0], title=lst[1], axisrange=lst[2], rebin=lst[3], nbins=lst[4], savehistos=savehistos)
-        elif len(lst) == 6:
-            return cls(name=lst[0], title=lst[1], vartoplot=lst[2], axisrange=lst[3], rebin=lst[4], nbins=lst[5], savehistos=savehistos)
+    def fromlist(cls, lst, savehistos=False, select=None, append=''):
+        if select is None:
+            if len(lst) == 5:
+                return cls(name=lst[0] + append, title=lst[1], axisrange=lst[2], rebin=lst[3], nbins=lst[4], savehistos=savehistos)
+            elif len(lst) == 6:
+                return cls(name=lst[0] + append, title=lst[1], vartoplot=lst[2] + append, axisrange=lst[3], rebin=lst[4], nbins=lst[5], savehistos=savehistos)
+            else:
+                raise NotImplementedError('cannot interpret lists of length ' + str(len(lst)))
         else:
-            raise NotImplementedError('cannot interpret lists of length ' + str(len(lst)))
+            if len(lst) == 5:
+                return cls(name=select[0] + lst[0] + append, title=lst[1], vartoplot=lst[0] + append + '[' + select[1] + ']', axisrange=lst[2], rebin=lst[3], nbins=lst[4], savehistos=savehistos)
+            elif len(lst) == 6:
+                return cls(name=select[0] + lst[0] + append, title=lst[1], vartoplot=lst[2] + append + '[' + select[1] + ']', axisrange=lst[3], rebin=lst[4], nbins=lst[5], savehistos=savehistos)
+            else:
+                raise NotImplementedError('cannot interpret lists of length ' + str(len(lst)))
 
 
 class Ratio:
-    def __init__(self, category, name, savehistos=False, variablestosave=None, drawoptions=None):
+    def __init__(self, category, name, savehistos=False, variablestosave=None, drawoptions=None, takestylefrom=None, hidden=False,
+                 ratiofitlimits=('START', 'END'), ratiofitvariables=None, xaxlabeloffset=None):
 
         if variablestosave is None:
             variablestosave = []
 
-        if category not in ['ratio', 'diff', 'cutsig', 'binsig', 'calibration', 'efficiency']:
+        if ratiofitvariables is None:
+            ratiofitvariables = []
+
+        if category not in ['ratio', 'ratiowithfit', 'diff', 'cutsig', 'binsig', 'calibration', 'efficiency']:
             raise NotImplementedError('unknown ratio category')
         self.category = category
 
@@ -1486,6 +1843,11 @@ class Ratio:
         self.savehistos = savehistos
         self.variablestosave = variablestosave
         self.drawoptions = drawoptions
+        self.takestylefrom = takestylefrom
+        self.hidden = hidden
+        self.ratiofitlimits = ratiofitlimits
+        self.ratiofitvariables = ratiofitvariables
+        self.xaxlabeloffset = xaxlabeloffset
 
     def __str__(self):
         return self.category + self.name

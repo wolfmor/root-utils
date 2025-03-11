@@ -6,7 +6,7 @@ pf = PlotFactory(
     outputpattern='compareStopDirect_VARIABLE',  # change this to a name that suits you (VARIABLE will be replaced by the variable name)
     outputformat='pdf',
 
-    normalize=True,  # for now, we only want to look at differences in shape
+    normalize=False,  # for now, we only want to look at differences in shape
     ylabel='Fraction of Events',
     ylabelratio='Stop/Direct',
 
@@ -19,7 +19,7 @@ pf = PlotFactory(
 path = '/pnfs/desy.de/cms/tier2/store/user/mowolf/NTuples/NTuplesV10/'  # the path where the ntuples are stored
 eventselection = None  # don't apply any additional event selection cuts
 
-ntestfiles = 0  # if it takes too long to process all files, use only a few to test
+ntestfiles = 10  # if it takes too long to process all files, use only a few to test
 
 pf.add_samples([
     # add two direct higgsino production samples
@@ -27,20 +27,25 @@ pf.add_samples([
                tree='tEvent', files=path + 'SignalV4_16/step3_higgsinoDm0eDmpm_RunIISpring21UL16FS_susyall_mChipm115GeV_dm0p568GeV_part*_NTuple_job*.root',
                eventselection=eventselection,
                color=ROOT.kAzure+1),
-    TreeSample(ntestfiles=ntestfiles, category='line', name='direct_mChi115_dm0p97',
-               tree='tEvent', files=path + 'SignalV4_16/step3_higgsinoDm0eDmpm_RunIISpring21UL16FS_susyall_mChipm115GeV_dm0p968GeV_part*_NTuple_job*.root',
-               eventselection=eventselection,
-               color=ROOT.kRed),
 
-    # add the corresponding stop production samples
-    TreeSample(ntestfiles=ntestfiles, category='marker', name='stop_mStop800_mChi115_dm0p6',
-               tree='tEvent', files=path + 'SignalStopV3_16/higgsino_Summer16_stopstop_800GeV_mChipm115GeV_dm0p6GeV_pu35_part*_NTuple_job*.root',
-               eventselection=eventselection,
-               color=ROOT.kAzure+1),
-    TreeSample(ntestfiles=ntestfiles, category='marker', name='stop_mStop800_mChi115_dm1p0',
-               tree='tEvent', files=path + 'SignalStopV3_16/higgsino_Summer16_stopstop_800GeV_mChipm115GeV_dm1p0GeV_pu35_part*_NTuple_job*.root',
-               eventselection=eventselection,
-               color=ROOT.kRed),
+    TreeSample(ntestfiles=ntestfiles, category='line', name='direct_mChi115_dm0p57_pass',
+               tree='tEvent', files=path + 'SignalV4_16/step3_higgsinoDm0eDmpm_RunIISpring21UL16FS_susyall_mChipm115GeV_dm0p568GeV_part*_NTuple_job*.root',
+               eventselection='n_jet_100>1',
+               color=ROOT.kBlack),
+    # TreeSample(ntestfiles=ntestfiles, category='line', name='direct_mChi115_dm0p97',
+    #            tree='tEvent', files=path + 'SignalV4_16/step3_higgsinoDm0eDmpm_RunIISpring21UL16FS_susyall_mChipm115GeV_dm0p968GeV_part*_NTuple_job*.root',
+    #            eventselection=eventselection,
+    #            color=ROOT.kRed),
+    #
+    # # add the corresponding stop production samples
+    # TreeSample(ntestfiles=ntestfiles, category='marker', name='stop_mStop800_mChi115_dm0p6',
+    #            tree='tEvent', files=path + 'SignalStopV3_16/higgsino_Summer16_stopstop_800GeV_mChipm115GeV_dm0p6GeV_pu35_part*_NTuple_job*.root',
+    #            eventselection=eventselection,
+    #            color=ROOT.kAzure+1),
+    # TreeSample(ntestfiles=ntestfiles, category='marker', name='stop_mStop800_mChi115_dm1p0',
+    #            tree='tEvent', files=path + 'SignalStopV3_16/higgsino_Summer16_stopstop_800GeV_mChipm115GeV_dm1p0GeV_pu35_part*_NTuple_job*.root',
+    #            eventselection=eventselection,
+    #            color=ROOT.kRed),
 ])
 
 pf.add_variables([
@@ -64,8 +69,11 @@ pf.add_variables([
 
 pf.add_ratios([
     # to visualize the difference between the production modes
-    Ratio(category='ratio', name='stop_mStop800_mChi115_dm0p6:direct_mChi115_dm0p57'),
-    Ratio(category='ratio', name='stop_mStop800_mChi115_dm1p0:direct_mChi115_dm0p97'),
+    # Ratio(category='ratio', name='stop_mStop800_mChi115_dm0p6:direct_mChi115_dm0p57'),
+    # Ratio(category='ratio', name='stop_mStop800_mChi115_dm1p0:direct_mChi115_dm0p97'),
+
+    # Ratio(category='ratio', name='direct_mChi115_dm0p57_pass:direct_mChi115_dm0p57'),
+    Ratio(category='efficiency', name='direct_mChi115_dm0p57_pass:direct_mChi115_dm0p57'),
 ])
 
 # make the plots!

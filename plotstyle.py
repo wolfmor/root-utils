@@ -63,7 +63,7 @@ class Plotstyle:
         gPad.SetLeftMargin( self.L/self.W )
         gPad.SetRightMargin( self.R/self.W )
         gPad.SetTopMargin( self.T/self.H )
-        gPad.SetBottomMargin( self.B/self.H )
+        gPad.SetBottomMargin( 1.1 * self.B/self.H )
         gPad.SetTickx(1)
         gPad.SetTicky(1)
 
